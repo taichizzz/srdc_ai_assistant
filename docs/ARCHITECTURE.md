@@ -2,6 +2,7 @@
 
 > **Audience:** every human and AI coding agent working on this repo.
 > **How to use this doc:** read it before writing any code. If a task conflicts with a rule here, the rule wins — stop and flag it instead of improvising. Section 12 is the list of hard guardrails; Section 11 tells you which module your milestone lives in.
+> **Siblings:** [PROJECT.md](PROJECT.md) — vision & why · [PLAN.md](PLAN.md) — schedule & ownership (中文). This doc is the source of truth for interfaces, data contracts, and code structure.
 
 ---
 

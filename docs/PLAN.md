@@ -1,5 +1,8 @@
 # AI 車載 IVI「所見即可說」智慧語音操控系統 — 三週實習計劃表
 
+> **這份 = 「誰 / 何時」**：排程、里程碑日期、分工（團隊內部用，中文）。**進度狀態以本文件為準。**
+> **相關文件**：[PROJECT.md](PROJECT.md) — 願景與背景（英）· [ARCHITECTURE.md](ARCHITECTURE.md) — 工程契約，寫程式前先讀（英）
+
 > **核心理念**：坐在副駕、看著螢幕、幫你動手的無形助理 — **聽 (Listen) → 看 (See) → 動手 (Act)**。
 > **技術突破點**：拋棄過去 FoxMap 為每個 App 寫死 API 的盲操作，改用 **Android Accessibility Service** 建立通用操作橋樑 — 讀 UI 樹（眼）、代替點擊（手）。
 > **成功標準**：跑通完整閉環。進度卡關時果斷砍功能，保住核心主線。
@@ -22,22 +25,28 @@
 
 ## 0.5 團隊分工
 
-| 成員 | 主責條線 | 專長對應 |
+> **Mentor 指示（2026/07/15）**：一階段一階段完成，**不同步進行**。全員聚焦當前階段，依專長分主責 / 支援，不預先開下一階段的工。
+
+| 成員 | 專長 | 每階段角色 |
 |---|---|---|
-| **Leo** | 語音 I/O 軌（STT/TTS Loop）→ 中期轉 決策/Pipeline 層 | 有 STT + Android 經驗，雲端串接最順手 |
-| **Mark** | Accessibility Bridge 軌（讀畫面/點擊）+ 整合主線 | Android 底子，扛全案最硬的無障礙底層與 Week 3 整合 |
-| **Rebecca** | 產品 / 測試 / 交付 | PM + 產品設計；避開硬底層，主導高價值低程式門檻工作 |
+| **Leo** | STT + Android | W1 主責語音；W2 支援（決策/文字比對）；W3 主責 Target A + 語音接線 |
+| **Mark** | Android / 無障礙 | W1 App 架構骨架 + 支援語音；W2 主責 Bridge；W3 主責整合 |
+| **Rebecca** | PM / 產品設計 | 全程產品 / 測試 / 交付：場景、驗收、Debug 頁、Demo、簡報、Target B 語意標註 |
 
-### 核心原則：平行雙軌，不交棒
-- **語音 I/O**（Leo）與 **Accessibility Bridge**（Mark）互相獨立，只在 Week 3 合流，故**從 Week 1 平行開跑**，不必依序等待。
-- Bridge 用打字/按鈕測試（不需語音）、語音 Loop 用對話測試（不需 Bridge），彼此不阻塞。
-- **負載平均**：Mark 於 Week 1 提前開無障礙 spike、Leo 於 Week 2 轉做 Pipeline 層，兩人「中→重」與「重→中」交錯，避免整週閒置或同週雙爆。
+### 核心原則：循序推進，全員聚焦當前階段
+- **依序完成**：Week 1 語音全部收斂並 Demo 通過，才進 Week 2；Week 2 通過才進 Week 3。
+- **不預先開工**：當前階段做什麼，全員任務都服務該階段里程碑；不提前碰下一階段（例如 Week 1 不碰無障礙、不做 FoxMap 研究）。
+- **非主責者不閒置**：該階段專長不對口的人，接該階段的**架構 / 支援 / 產品測試**工作或與主責 pair，而非跳做未來階段。
 
-### 🔑 關鍵動作：定版介面契約
-**Week 1 結束前，Leo + Mark 共同定版「介面契約」**（Bridge 四介面回傳格式 + 語音層指令字串格式）。定版後兩軌各自獨立開發，Week 3 只需接上同一份契約，整合風險大幅降低。
+### 每階段主 / 副
+
+| | Week 1 語音 | Week 2 手眼 | Week 3 整合 |
+|---|---|---|---|
+| **主責** | Leo（STT/TTS/Loop） | Mark（Bridge 四介面 + M2.1–2.3） | Mark（整合 M3.1/M3.2）· Leo（Target A） |
+| **支援** | Mark（App 架構骨架）· Rebecca（場景/驗收） | Leo（決策/文字比對）· Rebecca（格式/Debug/測試） | Rebecca（Demo/簡報/Target B 語意標註） |
 
 ### Rebecca 成長路徑
-低複雜度程式（Debug 頁、UI 清單格式）以 **pair programming** 跟 Mark / Leo 配對，既有產出又練手。
+低複雜度程式（Debug 頁、UI 清單格式）以 **pair programming** 跟當階段主責配對，既有產出又練手。
 
 ## 1. 時程總覽
 
@@ -49,14 +58,7 @@
 | Week 3 | 08/03（一）–08/07（五） | 最終整合實戰（Boss 戰）+ 交付 | M3.1 / M3.2 / M3.3 | 現場 Demo：語音操控完整閉環 |
 
 > 週末（假日）預設略過。每週最後一個工作日為現場 Demo 驗收日。
-
-### 負載節奏（平行雙軌）
-
-| | Week 1 | Week 2 | Week 3 |
-|---|---|---|---|
-| **Leo**（語音軌） | 🔴 重 STT/TTS/Loop | 🟡 中 轉 Pipeline 層 + 效能 | 🔴 重 語音接線 + Target A |
-| **Mark**（Bridge 軌） | 🟡 中 架構骨架 + M2.1 spike | 🔴 重 Bridge 四介面 | 🔴 重 M3.1→M3.2 整合 |
-| **Rebecca**（產品軌） | 🟢 場景/驗收/FoxMap 研究 | 🟢 清單格式/Debug 頁/測試案例 | 🟢 語意標註/Demo 影片/簡報 |
+> **循序推進**：前一階段 Demo 驗收通過，才開始下一階段（見 §0.5）。
 
 ---
 
@@ -77,19 +79,16 @@
 ## 3. Week 1 — 語音大腦 / App 雛形（07/20 – 07/24）
 
 > 建 Android App 雛形，串接雲端服務，完成「說 → 聽懂 → 回話」基礎互動。
-> ⚠️ 語音軌**先不碰無障礙**；Bridge 軌**同步開跑**（見下方 Mark 分工）。
+> ⚠️ **全員聚焦語音，本週不碰無障礙**（循序推進，見 §0.5）。
 
-### 里程碑任務（語音軌）
+### 里程碑任務（本階段主線）
 - [ ] **M1.1 STT 串接** `[Leo]`：麥克風錄音（`AudioRecord`）→ 雲端 STT → 畫面顯示辨識文字
 - [ ] **M1.2 TTS 串接** `[Leo]`：傳入文字 → 雲端 TTS → 喇叭語音念出
 - [ ] **M1.3 語音互動 Loop（主線）** `[Leo]`：說「你好」→ 聽懂 → 回覆（LM 或預設規則）→ 播報，全程 App 內自動流轉
 
-### 平行任務
-- [ ] **App 架構骨架** `[Mark]`：搭 Pipeline 協調骨架，供語音軌與 Bridge 軌掛載
-- [ ] **M2.1 spike（提前）** `[Mark]`：讓無障礙服務跑起來、`getRootInActiveWindow()` dump 到 log
+### 支援任務（服務本階段）
+- [ ] **App 架構骨架** `[Mark]`：搭 Pipeline 協調骨架，承載語音 Loop（後續階段亦掛載於此）
 - [ ] **對話場景與回覆規則** `[Rebecca]`：各指令回什麼、驗收清單
-- [ ] **FoxMap 產品面研究** `[Rebecca]`：摸清自繪 UI 的語意標註挑戰（鋪路 Target B）
-- [ ] 🔑 **定版介面契約** `[Leo + Mark]`（本週結束前）：Bridge 四介面回傳格式 + 語音層指令字串格式
 
 ### 驗收標準（Demo）
 - [ ] 對 App 說一句話，畫面顯示辨識文字並語音回覆 —— 全程免手動介入
@@ -105,17 +104,17 @@
 > 擴充 Week 1 的 App，讓它能看、能動，定義 Bridge 介面。
 > 💡 **本週用按鈕 / 打字測試，不急著接語音**（手眼做穩再接嘴巴）。
 
-### 定義橋接介面（Bridge Interface）
+### 開工先定契約
+- [ ] 🔑 **定版介面契約** `[Leo + Mark]`（本階段第一件事）：Bridge 四介面回傳格式 + 語音層指令字串格式（Week 3 整合時兩端接同一份）
 - [ ] 定義並實作 `[Mark]`：`ui_read_screen`、`ui_click`、`ui_set_text`、`ui_back`
 
-### 里程碑任務（Bridge 軌）
+### 里程碑任務（本階段主線）
 - [ ] **M2.1 讀畫面** `[Mark]`：啟用服務後即時抽出當前畫面元素清單（Debug 頁或 Log）。格式如：`{"screen":"home","elements":[{"i":0,"text":"設定"},{"i":1,"text":"音樂"}]}`
 - [ ] **M2.2 操作畫面** `[Mark]`：下「設定」指令，App 代替使用者精準點開設定頁（`performAction(ACTION_CLICK)`）
 - [ ] **M2.3 操作閉環（主線）** `[Mark]`：點擊後自動「回讀畫面」，確認狀態已改變
 
-### 平行任務
-- [ ] **決策 / Pipeline 層骨架** `[Leo]`：收指令→比對→呼叫 Bridge→回讀→回話（語音軌收尾後轉入）
-- [ ] **STT/TTS 效能優化** `[Leo]`（Bonus2 起步，可選）
+### 支援任務（服務本階段）
+- [ ] **決策 / 文字比對** `[Leo]`：M2.2 需要 —— 收指令 → 比對畫面元素 → 決定點哪個；並協助讀 UI 樹
 - [ ] **UI 清單格式設計** `[Rebecca]`：留哪些欄位、如何呈現最好比對（與 Mark 配對）
 - [ ] **Debug 顯示頁** `[Rebecca]`（pair with Mark）＋ 測試案例 / Demo 腳本
 
@@ -132,14 +131,14 @@
 
 > 將 Week 1 語音接上 Week 2 Bridge，跑通「所見即可說」完整閉環並交付。
 
-### Integration Base（整合基座）— 兩軌合流，全員上陣
+### Integration Base（整合基座）— 語音 + Bridge 整合，全員上陣
 - [ ] **M3.1 單步執行** `[Mark 主 / Leo 支援]`：一句語音 → 讀畫面 → 決策 → 執行 → 回讀 → 語音回饋（單一動作閉環）
 - [ ] **M3.2 連續多步導航（主線）** `[Mark 主 / Leo 支援]`：多步任務 = 單步閉環連續跑多次，每步依賴「當下的畫面」
 - [ ] **M3.3 整合驗收** `[全員]`：完整場景端到端跑通
 
 ### 實戰目標（擇一主攻，行有餘力再攻 Target B）
 - [ ] **Target A — Car Settings（標準，主攻）** `[Leo 主 / Mark 支援]`：語音「打開設定 → 顯示 → 字型調大」。標準 Android UI 原生支援 Accessibility，適合驗收。
-- [ ] **Target B — FoxMap 改造（進階 / 選配）** `[Rebecca 主 / Mark 支援]`：地圖多為自繪 UI、無障礙看不到 → 回 `kitt-map` 補 `contentDescription` 等語意標註，讓 FoxMap 可被看見與操作。
+- [ ] **Target B — FoxMap 改造（進階 / 選配）** `[Rebecca 主 / Mark 支援]`：先做 FoxMap 產品面研究，摸清自繪 UI 的語意標註挑戰 → 回 `kitt-map` 補 `contentDescription` 等語意標註，讓 FoxMap 可被看見與操作。
 
 ### 交付成果包
 - [ ] 可執行 Android APK `[Mark]`
@@ -170,9 +169,10 @@
 
 ## 附錄 C：風險與備援
 
+> 完整風險表以 [PROJECT.md §9 Risk Management & Cut Lines](PROJECT.md#9-risk-management--cut-lines) 為準；此處僅列團隊排程最相關的重點。
+
 | 風險 | 備援方案 |
 |---|---|
 | AAOS 模擬器有問題 | 先用一般手機 / 平板測試 |
-| 進度落後 | 砍 Fork B 與 LM，保住 M1.3 → M2.3 → M3.2 |
+| 進度落後 | 依序砍 Target B → LM → polish，保住 M1.3 → M2.3 → M3.2 |
 | 雲端服務延遲 / 不穩 | 先用預設規則文字比對；LM 延後 |
-| 自繪 UI 抓不到（FoxMap） | 補 `contentDescription` 語意標註 |

@@ -5,3 +5,24 @@
 *.tmp
 *.bak
 *.swp
+
+# Android / Gradle
+*.iml
+.gradle/
+build/
+/local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.ipr
+*.iws
+
+# Secrets — never commit credentials (see docs/ARCHITECTURE.md §9)
+local.properties
+*.jks
+*.keystore
+**/service-account*.json
+google-services.json
