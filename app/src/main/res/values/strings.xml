@@ -12,6 +12,13 @@
     <string name="stop">Stop</string>
     <string name="requesting_permission">Requesting permission…</string>
     <string name="stopping">Stopping…</string>
+    <string name="debug_loopback_title">DEBUG audio verification</string>
+    <string name="debug_loopback_explanation">Records from the same microphone stream for up to 10 seconds, releases the mic, then plays raw PCM. This does not create transcript text.</string>
+    <string name="debug_captured_bytes">Captured PCM: %1$d bytes</string>
+    <string name="debug_limit_reached">The 10-second memory cap was reached; recording stopped automatically.</string>
+    <string name="debug_playing">Playing captured PCM — microphone controls are disabled</string>
+    <string name="debug_record_and_play">Record &amp; Play Back (DEBUG)</string>
+    <string name="debug_stop_and_play">Stop &amp; Play Back</string>
     <string name="partial_transcript_label">Current partial transcript</string>
     <string name="no_partial_transcript">No partial transcript</string>
     <string name="final_transcript_label">Accumulated final transcript</string>

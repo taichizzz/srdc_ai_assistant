@@ -23,14 +23,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.R
 
 /**
  * Renders the minimal M1.1 push-to-talk and typed-transcript debug interface.
  *
  * @param state immutable ViewModel state to display.
- * @param onStart invoked when the user requests a permission/state-only Start transition.
- * @param onStop invoked when the user requests a permission/state-only Stop transition.
+ * @param onStart invoked when the user requests production microphone capture.
+ * @param onStop invoked when the user requests production microphone release.
+ * @param onDebugRecordAndPlayback invoked to start debug recording or stop it and play retained PCM.
  * @param onRetry invoked to clear a recoverable error.
  * @param onOpenSettings invoked when permanent permission denial requires Android Settings.
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
@@ -47,15 +49,19 @@ fun SttDebugScreen(
     state: SttUiState,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onDebugRecordAndPlayback: () -> Unit,
     onRetry: () -> Unit,
     onOpenSettings: () -> Unit,
     onTypedTranscriptSubmitted: (String) -> Unit,
 ) {
     var typedTranscript by rememberSaveable { mutableStateOf("") }
     val isSessionActive =
-        state.status == SttStatus.Connecting || state.status == SttStatus.Listening
+        !state.isDebugRecording &&
+            (state.status == SttStatus.Connecting || state.status == SttStatus.Listening)
     val isTransitioning =
         state.status == SttStatus.RequestingPermission || state.status == SttStatus.Stopping
+    val isAudioBusy =
+        isSessionActive || state.isDebugRecording || state.isDebugPlaybackActive || isTransitioning
     val permissionLabel =
         when (state.microphonePermission) {
             MicrophonePermissionStatus.NotRequested ->
@@ -92,7 +98,7 @@ fun SttDebugScreen(
 
         Button(
             onClick = if (isSessionActive) onStop else onStart,
-            enabled = !isTransitioning,
+            enabled = !isTransitioning && !state.isDebugRecording && !state.isDebugPlaybackActive,
         ) {
             Text(
                 text =
@@ -104,6 +110,50 @@ fun SttDebugScreen(
                         else -> stringResource(R.string.start)
                     },
             )
+        }
+
+        if (BuildConfig.DEBUG) {
+            HorizontalDivider()
+            Text(
+                text = stringResource(R.string.debug_loopback_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = stringResource(R.string.debug_loopback_explanation),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(R.string.debug_captured_bytes, state.debugCapturedBytes),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (state.debugBufferLimitReached) {
+                Text(
+                    text = stringResource(R.string.debug_limit_reached),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (state.isDebugPlaybackActive) {
+                Text(
+                    text = stringResource(R.string.debug_playing),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            OutlinedButton(
+                onClick = onDebugRecordAndPlayback,
+                enabled =
+                    !state.isDebugPlaybackActive &&
+                        !isTransitioning &&
+                        (!isSessionActive || state.isDebugRecording),
+            ) {
+                Text(
+                    if (state.isDebugRecording) {
+                        stringResource(R.string.debug_stop_and_play)
+                    } else {
+                        stringResource(R.string.debug_record_and_play)
+                    },
+                )
+            }
         }
 
         Text(
@@ -137,6 +187,7 @@ fun SttDebugScreen(
             modifier = Modifier.fillMaxWidth(),
             label = { Text(stringResource(R.string.typed_transcript_label)) },
             singleLine = true,
+            enabled = !isAudioBusy,
         )
         Button(
             onClick = {
@@ -146,7 +197,7 @@ fun SttDebugScreen(
                     typedTranscript = ""
                 }
             },
-            enabled = typedTranscript.isNotBlank(),
+            enabled = typedTranscript.isNotBlank() && !isAudioBusy,
         ) {
             Text(stringResource(R.string.submit_transcript))
         }

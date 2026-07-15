@@ -1,8 +1,9 @@
 # IVI AI 助理 — AI In-Vehicle Voice Control System (AAOS)
 
-> **This doc = the "what & why":** vision, background, roadmap, tech stack, deliverables. Start here.
-> **Siblings:** [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built (read before coding) · [PLAN.md](PLAN.md) — schedule & ownership (中文)
-> **Platform:** Android Automotive OS (AAOS) native app · **Duration:** 3 weeks, 3 phases, live demo acceptance at each phase
+> **Project:** 2026 暑期實習專案 Kickoff · 車用軟體研發處
+> **Type:** All-in-one project doc — vision, architecture, milestones, tech stack, references, deliverables
+> **Platform:** Android Automotive OS (AAOS) native app
+> **Duration:** 3 weeks, 3 phases, live demo acceptance at each phase
 
 ---
 
@@ -94,13 +95,9 @@ Week 2 defines a minimal, stable contract between "the brain" and "the hands and
 
 Everything the assistant does — no matter how complex the task — must be expressible as a sequence of these four calls plus read-backs. Resist adding primitives until a real milestone forces it.
 
-> **Source of truth:** exact Kotlin signatures and the `ScreenSnapshot` data contract live in [ARCHITECTURE.md §4–5](ARCHITECTURE.md#4-core-interfaces-the-contracts-agents-code-against). This table is a summary — do not add primitives here without updating that doc first.
-
 ## 6. Roadmap — 三週三階段
 
 Each week ends with a **現場 Demo 驗收** (live demo acceptance). Milestones are the acceptance criteria, not suggestions.
-
-> This section describes **what each milestone proves**. For **dates & who owns what** see [PLAN.md](PLAN.md); for **which code module each milestone touches** see [ARCHITECTURE.md §11](ARCHITECTURE.md#11-milestone--module-map).
 
 ### Week 1 · 語音大腦 (App 雛形)
 
@@ -193,17 +190,7 @@ Everything below is a suggestion consistent with the deck's constraints — swap
 | LM latency / cost / flakiness                       | LM is optional per the deck; text matching alone must pass Target A. Feature-flag it.                        |
 | Schedule slips in general                           | Cut in this order: Target B → LM → polish. Never cut: **M1.3 → M2.3 → M3.2**.                                |
 
-## 10. Open Questions for Mentor
-
-Decisions we need from the mentor before / early in Week 1:
-
-1. **STT / TTS provider** — which cloud vendor should we use, and are keys / quota already available?
-2. **AAOS environment** — who provides the test setup, and is it OK to develop on a regular Android phone/tablet first (per the kickoff escape hatch)?
-3. **LM** — is it a required feature or confirmed optional? If required, which model / service?
-4. **FoxMap / `kitt-map`** — repo access and location for the Target B annotation work?
-5. **Demo acceptance** — date and format of the live 驗收 (each Friday? final week only?).
-
-## 11. Glossary
+## 10. Glossary
 
 - **AAOS** — Android Automotive OS, the native in-vehicle Android platform (not Android Auto phone projection).
 - **IVI** — In-Vehicle Infotainment, the car's central screen system.

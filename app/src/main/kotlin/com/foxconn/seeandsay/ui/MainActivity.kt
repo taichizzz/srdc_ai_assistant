@@ -17,18 +17,26 @@ import androidx.compose.runtime.getValue
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.foxconn.seeandsay.speech.DebugAudioPlayer
+import com.foxconn.seeandsay.speech.MicRecorder
 
 /**
  * Hosts the M1.1 debug UI and coordinates Android's microphone permission APIs.
  *
  * The activity translates platform permission results into provider-neutral ViewModel events. It
  * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
- * no microphone or network resource in Phase 2. Permission requests can be denied or suppressed by
- * Android; both outcomes are converted to recoverable UI state rather than thrown to the caller.
+ * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected Phase
+ * 3 audio components. Permission requests can be denied or suppressed by Android; both outcomes are
+ * converted to recoverable UI state rather than thrown to the caller.
  */
 class MainActivity : ComponentActivity() {
 
-    private val sttViewModel: SttViewModel by viewModels()
+    private val sttViewModel: SttViewModel by viewModels {
+        SttViewModel.Factory(
+            audioCaptureSource = MicRecorder(applicationContext),
+            pcmAudioPlayer = DebugAudioPlayer(),
+        )
+    }
 
     private val microphonePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -47,7 +55,7 @@ class MainActivity : ComponentActivity() {
         }
 
     /**
-     * Creates the activity and installs the lifecycle-aware Phase 2 Compose debug screen.
+     * Creates the activity and installs the lifecycle-aware Phase 3 Compose debug screen.
      *
      * @param savedInstanceState framework state from a prior activity instance, or `null` for a new
      * instance.
@@ -69,6 +77,7 @@ class MainActivity : ComponentActivity() {
                         state = uiState,
                         onStart = ::handleStartRequest,
                         onStop = sttViewModel::onStopRequested,
+                        onDebugRecordAndPlayback = ::handleDebugRecordAndPlaybackRequest,
                         onRetry = sttViewModel::onRetryRequested,
                         onOpenSettings = ::openApplicationSettings,
                         onTypedTranscriptSubmitted = sttViewModel::submitTypedTranscript,
@@ -93,13 +102,13 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Starts the Phase 2 permission/state flow without allocating microphone or network resources.
+     * Starts the production permission/capture flow without creating a network resource.
      *
      * @return This function has no return value.
      *
      * The function must run on the main thread because Activity Result launchers are lifecycle UI
-     * APIs. Cancellation does not apply because no coroutine is launched. A permanently denied
-     * permission is left in a recoverable error state and is not requested again.
+     * APIs. The ViewModel launches and owns capture after permission is granted. A permanently
+     * denied permission is left in a recoverable error state and is not requested again.
      */
     private fun handleStartRequest() {
         if (hasMicrophonePermission()) {
@@ -107,6 +116,26 @@ class MainActivity : ComponentActivity() {
         }
 
         sttViewModel.onStartRequested()
+        if (sttViewModel.uiState.value.status == SttStatus.RequestingPermission) {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    /**
+     * Starts or stops the debug record-then-playback flow, requesting permission on first use.
+     *
+     * @return This function has no return value.
+     *
+     * The function runs on Android's main thread. Starting capture delegates lifecycle and
+     * cancellation to the ViewModel; stopping delegates the ordered capture-join/playback sequence.
+     * Permanent denial remains a recoverable error and does not relaunch a suppressed dialog.
+     */
+    private fun handleDebugRecordAndPlaybackRequest() {
+        if (hasMicrophonePermission()) {
+            sttViewModel.onMicrophonePermissionObserved(isGranted = true)
+        }
+
+        sttViewModel.onDebugRecordAndPlaybackRequested()
         if (sttViewModel.uiState.value.status == SttStatus.RequestingPermission) {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }

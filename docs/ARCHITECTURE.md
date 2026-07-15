@@ -1,4 +1,4 @@
-# ARCHITECTURE.md —「所見即可說」AAOS Voice Control App
+# ARCHITECTURE.md —「IVI AI 助理」AAOS Voice Control App
 
 > **Audience:** every human and AI coding agent working on this repo.
 > **How to use this doc:** read it before writing any code. If a task conflicts with a rule here, the rule wins — stop and flag it instead of improvising. Section 12 is the list of hard guardrails; Section 11 tells you which module your milestone lives in.
@@ -8,11 +8,11 @@
 
 ## 1. What we are building (one paragraph)
 
-A single native Android app for **Android Automotive OS (AAOS)** that lets a driver operate the IVI screen by voice. The app listens to the user's intent (cloud STT), **reads the current screen** through an Android **AccessibilityService** (the "eye"), decides which on-screen element satisfies the intent (text matching by default, LM optional), **performs the tap/typing itself** (the "hand"), re-reads the screen to confirm the state changed, and speaks the result back (cloud TTS). Multi-step tasks are the same loop run repeatedly — every step depends only on the screen *as it is right now*.
+A single native Android app for **Android Automotive OS (AAOS)** that lets a driver operate the IVI screen by voice. The app listens to the user's intent (cloud STT), **reads the current screen** through an Android **AccessibilityService** (the "eye"), decides which on-screen element satisfies the intent (text matching by default, LM optional), **performs the tap/typing itself** (the "hand"), re-reads the screen to confirm the state changed, and speaks the result back (cloud TTS). Multi-step tasks are the same loop run repeatedly — every step depends only on the screen _as it is right now_.
 
 ## 2. Non-negotiable constraints (from the project kickoff)
 
-1. **Decision logic lives in the app, not the cloud.** STT / LM / TTS are three *independent* cloud services chained by the app.
+1. **Decision logic lives in the app, not the cloud.** STT / LM / TTS are three _independent_ cloud services chained by the app.
 2. **LM is optional.** Simple commands must resolve by plain text matching. The LM sits behind a feature flag and must be removable with one config change.
 3. **The Accessibility Service is the only operation mechanism.** No per-app HTTP APIs, no intents-to-specific-apps shortcuts for the core loop (deep-links may exist only as explicitly-labeled fallbacks).
 4. **Every action is followed by a read-back verification.** No fire-and-forget clicks.
@@ -97,18 +97,31 @@ sealed class Decision {
   "screen": "home",
   "capturedAt": 1789000000000,
   "elements": [
-    { "i": 0, "text": "設定", "clickable": true, "editable": false, "bounds": [0,120,240,200] },
-    { "i": 1, "text": "音樂", "clickable": true, "editable": false, "bounds": [0,220,240,300] }
+    {
+      "i": 0,
+      "text": "設定",
+      "clickable": true,
+      "editable": false,
+      "bounds": [0, 120, 240, 200]
+    },
+    {
+      "i": 1,
+      "text": "音樂",
+      "clickable": true,
+      "editable": false,
+      "bounds": [0, 220, 240, 300]
+    }
   ]
 }
 ```
 
 Rules for `SnapshotBuilder`:
+
 - Include only nodes that are **visible** AND (**clickable** OR **editable** OR text-bearing).
 - `text` = node text, falling back to `contentDescription`, falling back to a labeled child's text.
 - If a text-bearing node is not clickable itself, **climb to the nearest clickable ancestor** and attach that ancestor's node reference to the element — this is the node `click()` acts on.
 - Cap the list (~40 elements) and strip whitespace — the snapshot must stay small enough to embed in an LM prompt.
-- Keep a parallel in-memory `elementIndex → AccessibilityNodeInfo` map for the *current* snapshot only; it is invalidated the moment a new snapshot is taken.
+- Keep a parallel in-memory `elementIndex → AccessibilityNodeInfo` map for the _current_ snapshot only; it is invalidated the moment a new snapshot is taken.
 
 ### 5.2 LM contract (only when `LM_ENABLED`)
 
@@ -125,6 +138,7 @@ Idle → Listening → Transcribing → Reading → Deciding → Acting → Veri
 ```
 
 Rules:
+
 - Implemented as a `sealed class PipelineState`, driven by one coroutine in `VoicePipeline`. **No component may bypass the state machine to call another component directly.**
 - `Verifying` = take a **fresh** snapshot after the action and check the expected change (target screen title present, previous element gone, or edit field now containing the text). A click without a verified change is a **failed** step.
 - `Speaking` must release the mic first (see Section 8, echo problem).
@@ -139,15 +153,15 @@ Rules:
 
 ## 8. Error handling & known sharp edges (agents: read before touching the relevant module)
 
-| Sharp edge | Rule |
-|---|---|
-| `getRootInActiveWindow()` returns null or a stale tree | Retry with backoff (3× / 150 ms). Prefer waiting on `TYPE_WINDOW_CONTENT_CHANGED` events (debounced ~300 ms) after an action instead of sleeping a fixed time. |
-| Assistant hears its own TTS | Never record while speaking. `Speaking` state must request audio focus and stop `MicRecorder` first. No open-mic barge-in in v1. |
-| Duplicate labels (two「設定」on screen) | `TextMatcher` must detect ambiguity and return `Speak("有兩個『設定』…")` asking the user, not click index 0 blindly. |
-| Target exists but is off-screen | Out of scope for v1 mainline. If needed for Target A, add `ACTION_SCROLL_FORWARD` as an explicit, doc-updated 5th primitive — do not hack it into `click`. |
-| STT/Chinese text mismatch (全形/半形, punctuation, 「設定」vs「设置」) | All matching goes through one `normalize()` (NFKC, strip punctuation/whitespace, lowercase Latin). Never compare raw strings. |
-| Cloud unreachable in the car | STT failure → speak a canned offline message. TTS failure → fall back to `DeviceTtsClient`. The app must never hang silently. |
-| Emulator has no working mic | Debug UI must always allow **typed input injected at the `Transcribing` output** — this is also how Week 2 is tested per the plan. |
+| Sharp edge                                                             | Rule                                                                                                                                                           |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getRootInActiveWindow()` returns null or a stale tree                 | Retry with backoff (3× / 150 ms). Prefer waiting on `TYPE_WINDOW_CONTENT_CHANGED` events (debounced ~300 ms) after an action instead of sleeping a fixed time. |
+| Assistant hears its own TTS                                            | Never record while speaking. `Speaking` state must request audio focus and stop `MicRecorder` first. No open-mic barge-in in v1.                               |
+| Duplicate labels (two「設定」on screen)                                | `TextMatcher` must detect ambiguity and return `Speak("有兩個『設定』…")` asking the user, not click index 0 blindly.                                          |
+| Target exists but is off-screen                                        | Out of scope for v1 mainline. If needed for Target A, add `ACTION_SCROLL_FORWARD` as an explicit, doc-updated 5th primitive — do not hack it into `click`.     |
+| STT/Chinese text mismatch (全形/半形, punctuation, 「設定」vs「设置」) | All matching goes through one `normalize()` (NFKC, strip punctuation/whitespace, lowercase Latin). Never compare raw strings.                                  |
+| Cloud unreachable in the car                                           | STT failure → speak a canned offline message. TTS failure → fall back to `DeviceTtsClient`. The app must never hang silently.                                  |
+| Emulator has no working mic                                            | Debug UI must always allow **typed input injected at the `Transcribing` output** — this is also how Week 2 is tested per the plan.                             |
 
 ## 9. Configuration & secrets
 
@@ -163,17 +177,17 @@ Rules:
 
 ## 11. Milestone → module map
 
-| Milestone | Touches | Definition of done |
-|---|---|---|
-| M1.1 STT | `speech/MicRecorder`, `CloudSttClient`, `ui/` | Spoken words appear as text on screen |
-| M1.2 TTS | `speech/CloudTtsClient` (+ device fallback) | Arbitrary text spoken aloud |
-| M1.3 Voice loop | `pipeline/VoicePipeline` (speech states only) | 「你好」→ reply spoken, no manual steps |
-| M2.1 Read screen | `bridge/SeeAndSayService`, `SnapshotBuilder`, `ui/DebugScreen` | Live element list of any foreground app |
-| M2.2 Operate | `bridge/AccessibilityBridge`, `decision/TextMatcher` | Typed「設定」opens Settings |
-| M2.3 Closed loop | `pipeline` Verifying state | Every click auto-confirmed by re-read |
-| M3.1 Single-step voice | `pipeline` full machine | Voice「打開設定」end-to-end |
-| M3.2 Multi-step | `pipeline/TaskRunner` | 「打開設定→顯示→字型調大」chain works |
-| M3.3 Target B (optional) | kitt-map repo (`contentDescription` annotation) | FoxMap elements appear in snapshots |
+| Milestone                | Touches                                                        | Definition of done                      |
+| ------------------------ | -------------------------------------------------------------- | --------------------------------------- |
+| M1.1 STT                 | `speech/MicRecorder`, `CloudSttClient`, `ui/`                  | Spoken words appear as text on screen   |
+| M1.2 TTS                 | `speech/CloudTtsClient` (+ device fallback)                    | Arbitrary text spoken aloud             |
+| M1.3 Voice loop          | `pipeline/VoicePipeline` (speech states only)                  | 「你好」→ reply spoken, no manual steps |
+| M2.1 Read screen         | `bridge/SeeAndSayService`, `SnapshotBuilder`, `ui/DebugScreen` | Live element list of any foreground app |
+| M2.2 Operate             | `bridge/AccessibilityBridge`, `decision/TextMatcher`           | Typed「設定」opens Settings             |
+| M2.3 Closed loop         | `pipeline` Verifying state                                     | Every click auto-confirmed by re-read   |
+| M3.1 Single-step voice   | `pipeline` full machine                                        | Voice「打開設定」end-to-end             |
+| M3.2 Multi-step          | `pipeline/TaskRunner`                                          | 「打開設定→顯示→字型調大」chain works   |
+| M3.3 Target B (optional) | kitt-map repo (`contentDescription` annotation)                | FoxMap elements appear in snapshots     |
 
 ## 12. Agent working agreements (hard guardrails)
 

@@ -17,7 +17,7 @@ enum class SttStatus {
     /** A future STT implementation is establishing its cloud stream. */
     Connecting,
 
-    /** The push-to-talk session is active; Phase 2 allocates no microphone yet. */
+    /** A production or debug microphone capture Flow is actively being collected. */
     Listening,
 
     /** A future STT implementation is closing audio and awaiting final results. */
@@ -59,6 +59,10 @@ enum class MicrophonePermissionStatus {
  * @property finalTranscript accumulated committed recognition text.
  * @property errorMessage recoverable user-facing failure, or `null` when no failure is active.
  * @property microphonePermission current platform permission outcome.
+ * @property isDebugRecording whether the bounded record-then-playback capture is active.
+ * @property isDebugPlaybackActive whether raw debug PCM is currently playing.
+ * @property debugCapturedBytes number of bytes retained for the current/last debug recording.
+ * @property debugBufferLimitReached whether the ten-second memory cap stopped debug recording.
  *
  * The value performs no work, throws no project-specific failure, and is safe to publish through a
  * StateFlow across coroutine contexts. It owns no cancellable resource.
@@ -70,4 +74,8 @@ data class SttUiState(
     val errorMessage: String? = null,
     val microphonePermission: MicrophonePermissionStatus =
         MicrophonePermissionStatus.NotRequested,
+    val isDebugRecording: Boolean = false,
+    val isDebugPlaybackActive: Boolean = false,
+    val debugCapturedBytes: Int = 0,
+    val debugBufferLimitReached: Boolean = false,
 )
