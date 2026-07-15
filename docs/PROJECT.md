@@ -2,7 +2,7 @@
 
 > **This doc = the "what & why":** vision, background, roadmap, tech stack, deliverables. Start here.
 > **Siblings:** [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built (read before coding) · [PLAN.md](PLAN.md) — schedule & ownership (中文)
-> **Platform:** Android Automotive OS (AAOS) native app · **Duration:** 3 weeks, 3 phases, live demo acceptance at each phase
+> **Platform:** Android Automotive OS (AAOS) native app · **Duration:** 3 weeks, 3 stages, live demo acceptance at each stage
 
 ---
 
@@ -18,7 +18,7 @@ Three core abilities:
 | **看 (See — 所見)**   | The assistant reads the _current_ IVI screen by itself and understands what actions are available right now. |
 | **動手 (Act — 可說)** | The assistant replaces the user's finger — it precisely clicks the target element on screen.                 |
 
-## 2. Background — from「盲操作」to true「IVI AI 助理」
+## 2. Background — from「盲操作」to true「所見即可說」
 
 The previous-generation approach (**FoxMap**) worked, but it was blind:
 
@@ -178,7 +178,7 @@ Everything below is a suggestion consistent with the deck's constraints — swap
 
 1. A runnable **Android APK**
 2. The complete **code repo**
-3. A live-operation **demo video** showing the seamless「IVI AI 助理」flow
+3. A live-operation **demo video** showing the seamless「所見即可說」flow
 4. A **results presentation** covering system architecture, the pitfalls encountered, and how they were solved
 
 **The single success criterion is「跑通完整閉環」— the complete closed loop works end-to-end.** When progress stalls, cut features without hesitation and defend the core mainline.
@@ -207,7 +207,7 @@ Decisions we need from the mentor before / early in Week 1:
 
 - **AAOS** — Android Automotive OS, the native in-vehicle Android platform (not Android Auto phone projection).
 - **IVI** — In-Vehicle Infotainment, the car's central screen system.
-- **IVI AI 助理** — "what you see, you can say": the assistant reads the current screen, so anything visible is voice-operable.
+- **所見即可說** — "what you see, you can say": the assistant reads the current screen, so anything visible is voice-operable. (This is the design philosophy; **IVI AI 助理** is the app's product name.)
 - **盲操作** — "blind operation": the old approach of firing hardcoded APIs without seeing the screen.
 - **Bridge** — the four-primitive Accessibility interface (`ui_read_screen`, `ui_click`, `ui_set_text`, `ui_back`).
 - **閉環 / read-back loop** — after every action, re-read the screen to confirm the state actually changed before proceeding.

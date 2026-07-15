@@ -29,12 +29,15 @@ app/
     │   ├── TaskRunner.kt           # multi-step orchestration (M3.2)
     │   └── PipelineState.kt        # sealed class of states
     ├── speech/            # Week 1 — voice I/O (NO accessibility imports allowed)
-    │   ├── SttClient.kt            # interface
-    │   ├── CloudSttClient.kt       # gRPC streaming (Google Cloud STT)
-    │   ├── TtsClient.kt            # interface
-    │   ├── CloudTtsClient.kt       # Google Cloud TTS
-    │   ├── DeviceTtsClient.kt      # on-device fallback (android.speech.tts)
-    │   └── MicRecorder.kt          # AudioRecord, 16 kHz mono PCM
+    │   ├── SttClient.kt            # ✓ interface (SttResult stream)
+    │   ├── SttResult.kt            # ✓ {transcript, isFinal, confidence?}
+    │   ├── AudioConfig.kt          # ✓ 16 kHz mono PCM16 format / chunk math
+    │   ├── MicRecorder.kt          # ✓ AudioRecord → cold Flow<ByteArray>
+    │   ├── BoundedPcmBuffer.kt     # ✓ debug: bounded PCM accumulator
+    │   ├── DebugAudioPlayer.kt     # ✓ debug: AudioTrack loopback playback
+    │   ├── CloudSttClient.kt       # planned — Google Cloud STT (gRPC streaming)
+    │   ├── TtsClient.kt            # planned — interface (M1.2)
+    │   └── CloudTtsClient.kt       # planned — Google Cloud TTS (M1.2)
     ├── bridge/            # Week 2 — the eye & hand (NO speech imports allowed)
     │   ├── UiBridge.kt             # interface: readScreen / click / setText / back
     │   ├── AccessibilityBridge.kt  # real impl backed by the service
@@ -48,9 +51,12 @@ app/
     ├── config/
     │   ├── FeatureFlags.kt         # LM_ENABLED, CLOUD_TTS_ENABLED, TARGET_B_ENABLED
     │   └── Secrets.kt              # reads from BuildConfig, never hardcode keys
-    └── ui/
-        ├── MainActivity.kt         # status + transcript log
-        └── DebugScreen.kt          # live element list, pipeline state (M2.1)
+    └── ui/                # MVVM: Activity is thin; ViewModel holds state
+        ├── MainActivity.kt         # ✓ permission flow + hosts Compose screen
+        ├── SttViewModel.kt         # ✓ StateFlow single source of truth (+ Factory)
+        ├── SttUiState.kt           # ✓ SttStatus / MicrophonePermissionStatus / state
+        ├── SttDebugScreen.kt       # ✓ M1.1 debug UI (status, transcript, typed input)
+        └── DebugScreen.kt          # planned — Week 2 live element list (M2.1)
 ```
 
 **Dependency direction:** `ui → pipeline → {speech, bridge, decision}`. `speech`, `bridge`, and `decision` never import each other. Only `pipeline` composes them. This is what makes rule 5 in Section 2 enforceable.

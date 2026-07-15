@@ -7,10 +7,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Renamed the user-facing application name from 「IVI AI 助理」 to **SeeAndSay** in
-  `app_name`, `README.md`, and `docs/demos/M1.1.md`. The internal package
-  (`com.foxconn.seeandsay`) is unchanged. The Phase 1 verification note below is
-  left as the historical record of what the UI displayed at that time.
+- Renamed the user-facing application name to **「IVI AI 助理」** (`app_name`, `README.md`,
+  `docs/demos/M1.1.md`). Naming history: original **所見即可說** → interim **SeeAndSay** →
+  current **「IVI AI 助理」**. The internal codename is unchanged: package
+  `com.foxconn.seeandsay` and `Theme.SeeAndSay` stay as-is.
+- Removed the duplicate root `project.md`; the single project overview now lives only at
+  `docs/PROJECT.md`.
+- Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
 ## [2026-07-15] — M1.1 Phase 3: Microphone capture and debug PCM loopback
 
@@ -223,4 +226,4 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Verified `./gradlew lintDebug`; Android lint completed successfully.
 - Verified a cold install and launch on an API 29 phone AVD because no AAOS AVD
   was configured locally; `MainActivity` reached `RESUMED` and its UI hierarchy
-  contained both **IVI AI 助理** and **M1.1 Android foundation is ready**.
+  contained both **所見即可說** and **M1.1 Android foundation is ready**.

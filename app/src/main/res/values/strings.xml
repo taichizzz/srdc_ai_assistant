@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">SeeAndSay</string>
+    <string name="app_name">IVI AI 助理</string>
     <string name="m1_1_debug_title">M1.1 speech-to-text debug</string>
     <string name="permission_status">Microphone permission: %1$s</string>
     <string name="permission_not_requested">Not requested</string>
