@@ -1,0 +1,155 @@
+package com.foxconn.seeandsay.ui
+
+import android.Manifest
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
+/**
+ * Hosts the M1.1 debug UI and coordinates Android's microphone permission APIs.
+ *
+ * The activity translates platform permission results into provider-neutral ViewModel events. It
+ * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
+ * no microphone or network resource in Phase 2. Permission requests can be denied or suppressed by
+ * Android; both outcomes are converted to recoverable UI state rather than thrown to the caller.
+ */
+class MainActivity : ComponentActivity() {
+
+    private val sttViewModel: SttViewModel by viewModels()
+
+    private val microphonePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            // A false rationale result after a completed request means Android will not present the
+            // dialog again, so recovery must move to the application's system Settings page.
+            val isPermanentlyDenied =
+                !isGranted &&
+                    !ActivityCompat.shouldShowRequestPermissionRationale(
+                        this,
+                        Manifest.permission.RECORD_AUDIO,
+                    )
+            sttViewModel.onMicrophonePermissionResult(
+                isGranted = isGranted,
+                isPermanentlyDenied = isPermanentlyDenied,
+            )
+        }
+
+    /**
+     * Creates the activity and installs the lifecycle-aware Phase 2 Compose debug screen.
+     *
+     * @param savedInstanceState framework state from a prior activity instance, or `null` for a new
+     * instance.
+     * @return This lifecycle callback has no return value.
+     *
+     * The callback runs on Android's main thread. StateFlow collection is automatically started and
+     * stopped with the activity lifecycle; cancelling that collection does not alter ViewModel
+     * state. Failures are limited to Android or Compose initialization failures because all
+     * recoverable permission and Settings-launch failures are converted to UI errors.
+     */
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            val uiState by sttViewModel.uiState.collectAsStateWithLifecycle()
+
+            MaterialTheme {
+                Surface(color = MaterialTheme.colorScheme.background) {
+                    SttDebugScreen(
+                        state = uiState,
+                        onStart = ::handleStartRequest,
+                        onStop = sttViewModel::onStopRequested,
+                        onRetry = sttViewModel::onRetryRequested,
+                        onOpenSettings = ::openApplicationSettings,
+                        onTypedTranscriptSubmitted = sttViewModel::submitTypedTranscript,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Reconciles permission state after returning from Android's application Settings screen.
+     *
+     * @return This lifecycle callback has no return value.
+     *
+     * The callback runs on the main thread and launches no coroutine. A revoked permission remains
+     * recoverable through the existing denial state; a newly granted permission clears the denial
+     * without automatically starting a listening session.
+     */
+    override fun onResume() {
+        super.onResume()
+        sttViewModel.onMicrophonePermissionObserved(hasMicrophonePermission())
+    }
+
+    /**
+     * Starts the Phase 2 permission/state flow without allocating microphone or network resources.
+     *
+     * @return This function has no return value.
+     *
+     * The function must run on the main thread because Activity Result launchers are lifecycle UI
+     * APIs. Cancellation does not apply because no coroutine is launched. A permanently denied
+     * permission is left in a recoverable error state and is not requested again.
+     */
+    private fun handleStartRequest() {
+        if (hasMicrophonePermission()) {
+            sttViewModel.onMicrophonePermissionObserved(isGranted = true)
+        }
+
+        sttViewModel.onStartRequested()
+        if (sttViewModel.uiState.value.status == SttStatus.RequestingPermission) {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    /**
+     * Opens this application's Android Settings page for permanent-denial recovery.
+     *
+     * @return This function has no return value.
+     *
+     * The function runs on the main thread and launches no coroutine. If the device cannot resolve
+     * or authorize the Settings intent, the failure is reported through the ViewModel so the UI
+     * remains responsive and retryable.
+     */
+    private fun openApplicationSettings() {
+        val intent =
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null),
+            )
+        try {
+            startActivity(intent)
+        } catch (error: ActivityNotFoundException) {
+            sttViewModel.onExternalActionFailed(
+                "Android could not open the application Settings screen.",
+            )
+        } catch (error: SecurityException) {
+            sttViewModel.onExternalActionFailed(
+                "Android blocked access to the application Settings screen.",
+            )
+        }
+    }
+
+    /**
+     * Checks the current platform grant for microphone recording.
+     *
+     * @return `true` when `RECORD_AUDIO` is currently granted; otherwise `false`.
+     *
+     * The check is synchronous, performs no blocking I/O, launches no coroutine, and is intended for
+     * the main thread. Android reports absence as `false`; this function throws no project-specific
+     * failure.
+     */
+    private fun hasMicrophonePermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+}

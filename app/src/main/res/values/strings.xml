@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SeeAndSay</string>
+    <string name="m1_1_debug_title">M1.1 speech-to-text debug</string>
+    <string name="permission_status">Microphone permission: %1$s</string>
+    <string name="permission_not_requested">Not requested</string>
+    <string name="permission_granted">Granted</string>
+    <string name="permission_denied">Denied — retry available</string>
+    <string name="permission_permanently_denied">Permanently denied — open settings</string>
+    <string name="session_status">Session status: %1$s</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="requesting_permission">Requesting permission…</string>
+    <string name="stopping">Stopping…</string>
+    <string name="partial_transcript_label">Current partial transcript</string>
+    <string name="no_partial_transcript">No partial transcript</string>
+    <string name="final_transcript_label">Accumulated final transcript</string>
+    <string name="no_final_transcript">No final transcript</string>
+    <string name="typed_input_title">Typed-input fallback</string>
+    <string name="typed_input_explanation">Works without microphone permission and uses the same final-transcript path as speech recognition.</string>
+    <string name="typed_transcript_label">Transcript text</string>
+    <string name="submit_transcript">Submit transcript</string>
+    <string name="retry">Retry</string>
+    <string name="open_settings">Open settings</string>
+    <string name="microphone_rationale">Microphone access is needed only when you press Start. Retry when you are ready to grant it.</string>
+</resources>

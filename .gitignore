@@ -1,4 +1,4 @@
-# Mac OS
+# macOS
 .DS_Store
 
 # Temporary files
@@ -6,22 +6,28 @@
 *.bak
 *.swp
 
-# Android / Gradle
+# Android / Gradle generated files
 *.iml
 .gradle/
 build/
-/local.properties
+**/build/
 captures/
 .externalNativeBuild/
 .cxx/
 
-# IDE
+# IDE and local tooling state
 .idea/
 *.ipr
 *.iws
+.relay/
+relay/
+
+# Machine-local Android and cloud configuration
+/local.properties
+local.properties
 
 # Secrets — never commit credentials (see docs/ARCHITECTURE.md §9)
-local.properties
+*.json
 *.jks
 *.keystore
 **/service-account*.json
