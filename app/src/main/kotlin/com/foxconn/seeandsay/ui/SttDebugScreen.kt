@@ -33,6 +33,8 @@ import com.foxconn.seeandsay.R
  * @param onStart invoked when the user requests production microphone capture.
  * @param onStop invoked when the user requests production microphone release.
  * @param onDebugRecordAndPlayback invoked to start debug recording or stop it and play retained PCM.
+ * @param onCloudSttSmokeTest invoked to start or stop the isolated DEBUG cloud round trip.
+ * @param onCloudConfigurationCheck invoked to inspect local token presence without a network call.
  * @param onRetry invoked to clear a recoverable error.
  * @param onOpenSettings invoked when permanent permission denial requires Android Settings.
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
@@ -50,6 +52,8 @@ fun SttDebugScreen(
     onStart: () -> Unit,
     onStop: () -> Unit,
     onDebugRecordAndPlayback: () -> Unit,
+    onCloudSttSmokeTest: () -> Unit,
+    onCloudConfigurationCheck: () -> Unit,
     onRetry: () -> Unit,
     onOpenSettings: () -> Unit,
     onTypedTranscriptSubmitted: (String) -> Unit,
@@ -57,11 +61,16 @@ fun SttDebugScreen(
     var typedTranscript by rememberSaveable { mutableStateOf("") }
     val isSessionActive =
         !state.isDebugRecording &&
+            !state.isCloudSttSmokeTestRunning &&
             (state.status == SttStatus.Connecting || state.status == SttStatus.Listening)
     val isTransitioning =
         state.status == SttStatus.RequestingPermission || state.status == SttStatus.Stopping
     val isAudioBusy =
-        isSessionActive || state.isDebugRecording || state.isDebugPlaybackActive || isTransitioning
+        isSessionActive ||
+            state.isDebugRecording ||
+            state.isDebugPlaybackActive ||
+            state.isCloudSttSmokeTestRunning ||
+            isTransitioning
     val permissionLabel =
         when (state.microphonePermission) {
             MicrophonePermissionStatus.NotRequested ->
@@ -70,6 +79,15 @@ fun SttDebugScreen(
             MicrophonePermissionStatus.Denied -> stringResource(R.string.permission_denied)
             MicrophonePermissionStatus.PermanentlyDenied ->
                 stringResource(R.string.permission_permanently_denied)
+        }
+    val cloudConfigurationLabel =
+        when (state.cloudConfiguration) {
+            CloudConfigurationStatus.NotChecked ->
+                stringResource(R.string.cloud_configuration_not_checked)
+            CloudConfigurationStatus.Configured ->
+                stringResource(R.string.cloud_configuration_configured)
+            CloudConfigurationStatus.NotConfigured ->
+                stringResource(R.string.cloud_configuration_not_configured)
         }
 
     Column(
@@ -98,7 +116,11 @@ fun SttDebugScreen(
 
         Button(
             onClick = if (isSessionActive) onStop else onStart,
-            enabled = !isTransitioning && !state.isDebugRecording && !state.isDebugPlaybackActive,
+            enabled =
+                !isTransitioning &&
+                    !state.isDebugRecording &&
+                    !state.isDebugPlaybackActive &&
+                    !state.isCloudSttSmokeTestRunning,
         ) {
             Text(
                 text =
@@ -112,7 +134,85 @@ fun SttDebugScreen(
             )
         }
 
+        HorizontalDivider()
+        Text(
+            text = stringResource(R.string.cloud_configuration_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            text = stringResource(R.string.cloud_configuration_status, cloudConfigurationLabel),
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Text(
+            text = stringResource(R.string.cloud_configuration_explanation),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedButton(
+            onClick = onCloudConfigurationCheck,
+            enabled = !isAudioBusy && !state.isCloudConfigurationCheckRunning,
+        ) {
+            Text(
+                if (state.isCloudConfigurationCheckRunning) {
+                    stringResource(R.string.cloud_configuration_checking)
+                } else {
+                    stringResource(R.string.cloud_configuration_check)
+                },
+            )
+        }
+
         if (BuildConfig.DEBUG) {
+            HorizontalDivider()
+            Text(
+                text = stringResource(R.string.cloud_stt_smoke_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = stringResource(R.string.cloud_stt_smoke_explanation),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(R.string.cloud_stt_smoke_partial_label),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text =
+                    state.cloudSmokePartialTranscript.ifBlank {
+                        stringResource(R.string.cloud_stt_smoke_no_partial)
+                    },
+            )
+            Text(
+                text = stringResource(R.string.cloud_stt_smoke_final_label),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text =
+                    state.cloudSmokeFinalTranscript.ifBlank {
+                        stringResource(R.string.cloud_stt_smoke_no_final)
+                    },
+            )
+            state.cloudSmokeFinalConfidence?.let { confidence ->
+                Text(
+                    text = stringResource(R.string.cloud_stt_smoke_confidence, confidence),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            OutlinedButton(
+                onClick = onCloudSttSmokeTest,
+                enabled =
+                    !isTransitioning &&
+                        !state.isDebugRecording &&
+                        !state.isDebugPlaybackActive &&
+                        (!isSessionActive || state.isCloudSttSmokeTestRunning),
+            ) {
+                Text(
+                    if (state.isCloudSttSmokeTestRunning) {
+                        stringResource(R.string.cloud_stt_smoke_stop)
+                    } else {
+                        stringResource(R.string.cloud_stt_smoke_start)
+                    },
+                )
+            }
+
             HorizontalDivider()
             Text(
                 text = stringResource(R.string.debug_loopback_title),
@@ -143,6 +243,7 @@ fun SttDebugScreen(
                 onClick = onDebugRecordAndPlayback,
                 enabled =
                     !state.isDebugPlaybackActive &&
+                        !state.isCloudSttSmokeTestRunning &&
                         !isTransitioning &&
                         (!isSessionActive || state.isDebugRecording),
             ) {

@@ -52,6 +52,24 @@ enum class MicrophonePermissionStatus {
 }
 
 /**
+ * Describes whether the local installation has supplied cloud speech authentication material.
+ *
+ * This state reports configuration presence only; `Configured` does not claim that Google has
+ * accepted the token because Phase 4 performs no network request. Values are immutable, perform no
+ * work, fail in no way, and have no threading or cancellation behavior.
+ */
+enum class CloudConfigurationStatus {
+    /** The user has not asked the development provider to inspect local configuration. */
+    NotChecked,
+
+    /** A non-blank short-lived token is present; remote acceptance remains unverified. */
+    Configured,
+
+    /** No non-blank short-lived token is present in this build. */
+    NotConfigured,
+}
+
+/**
  * Holds the single immutable source of truth for the M1.1 debug screen.
  *
  * @property status current permission/session state.
@@ -63,6 +81,12 @@ enum class MicrophonePermissionStatus {
  * @property isDebugPlaybackActive whether raw debug PCM is currently playing.
  * @property debugCapturedBytes number of bytes retained for the current/last debug recording.
  * @property debugBufferLimitReached whether the ten-second memory cap stopped debug recording.
+ * @property cloudConfiguration local access-token presence without exposing credential content.
+ * @property isCloudConfigurationCheckRunning whether the suspend provider check is active.
+ * @property isCloudSttSmokeTestRunning whether DEBUG mic audio is routed only to CloudSttClient.
+ * @property cloudSmokePartialTranscript latest raw interim text from the DEBUG cloud stream.
+ * @property cloudSmokeFinalTranscript committed raw text from the DEBUG cloud stream.
+ * @property cloudSmokeFinalConfidence final-only confidence from the latest DEBUG result.
  *
  * The value performs no work, throws no project-specific failure, and is safe to publish through a
  * StateFlow across coroutine contexts. It owns no cancellable resource.
@@ -78,4 +102,10 @@ data class SttUiState(
     val isDebugPlaybackActive: Boolean = false,
     val debugCapturedBytes: Int = 0,
     val debugBufferLimitReached: Boolean = false,
+    val cloudConfiguration: CloudConfigurationStatus = CloudConfigurationStatus.NotChecked,
+    val isCloudConfigurationCheckRunning: Boolean = false,
+    val isCloudSttSmokeTestRunning: Boolean = false,
+    val cloudSmokePartialTranscript: String = "",
+    val cloudSmokeFinalTranscript: String = "",
+    val cloudSmokeFinalConfidence: Float? = null,
 )

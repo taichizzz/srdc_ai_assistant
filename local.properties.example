@@ -1,0 +1,14 @@
+# Copy this file to local.properties; local.properties is intentionally gitignored.
+# Set sdk.dir to the Android SDK path on this development machine.
+sdk.dir=/absolute/path/to/Android/sdk
+
+# Non-secret GCP project used for Speech-to-Text quota attribution.
+# The Speech-to-Text API and billing/quota must already be enabled for this project.
+GCP_STT_PROJECT_ID=
+
+# DEBUG BUILDS ONLY: paste a short-lived OAuth access token generated with:
+#   gcloud auth print-access-token
+# The token normally expires after about one hour. Never paste a service-account JSON, refresh
+# token, private key, or other long-lived credential here. Production must use an approved
+# organization token broker instead of packaging a developer token.
+GCP_STT_ACCESS_TOKEN=

@@ -1,14 +1,19 @@
 package com.foxconn.seeandsay.ui
 
 import android.util.Log
+import com.foxconn.seeandsay.BuildConfig
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.foxconn.seeandsay.config.AccessTokenProvider
+import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.speech.AudioCaptureSource
 import com.foxconn.seeandsay.speech.AudioConfig
 import com.foxconn.seeandsay.speech.BoundedPcmBuffer
+import com.foxconn.seeandsay.speech.CloudSttException
 import com.foxconn.seeandsay.speech.PcmAudioPlayer
 import com.foxconn.seeandsay.speech.SttResult
+import com.foxconn.seeandsay.speech.SttClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -26,6 +31,8 @@ import kotlinx.coroutines.launch
  * @param audioCaptureSource cold provider-neutral PCM source shared by production capture and debug
  * loopback.
  * @param pcmAudioPlayer raw PCM output used only after debug capture has fully stopped.
+ * @param accessTokenProvider provider-neutral, suspendable source for cloud bearer tokens.
+ * @param debugCloudSttClient provider-neutral cloud stream used only by Phase 5's DEBUG smoke test.
  *
  * Public event methods are intended for Android's main thread. Capture and playback are children of
  * [viewModelScope]; replacing or clearing a session cancels and joins its predecessor so microphone
@@ -35,12 +42,15 @@ import kotlinx.coroutines.launch
 class SttViewModel(
     private val audioCaptureSource: AudioCaptureSource,
     private val pcmAudioPlayer: PcmAudioPlayer,
+    private val accessTokenProvider: AccessTokenProvider,
+    private val debugCloudSttClient: SttClient,
 ) : ViewModel() {
 
     private val mutableUiState = MutableStateFlow(SttUiState())
     private var sessionJob: Job? = null
     private var pendingCapture = PendingCapture.None
     private var debugPcmBuffer: BoundedPcmBuffer? = null
+    private var cloudConfigurationJob: Job? = null
 
     /**
      * Exposes immutable, lifecycle-friendly UI state to the activity and Compose screen.
@@ -111,8 +121,29 @@ class SttViewModel(
         when {
             state.isDebugPlaybackActive -> Unit
             state.isDebugRecording -> stopDebugCaptureAndPlay()
+            state.isCloudSttSmokeTestRunning -> Unit
             state.status == SttStatus.Listening || state.status == SttStatus.Connecting -> Unit
             else -> requestCapture(PendingCapture.DebugLoopback)
+        }
+    }
+
+    /**
+     * Starts or stops the DEBUG-only CloudSttClient microphone round-trip verification session.
+     *
+     * @return This function has no return value.
+     *
+     * The event is intended for the main thread and follows the existing first-use mic permission
+     * path. Starting launches one lifecycle-owned cloud stream; stopping cancels/joins it through the
+     * shared session chain so both microphone and RPC release. Results update only dedicated smoke
+     * fields and never call the production [onSttResult] reducer. Failures become recoverable state.
+     */
+    fun onCloudSttSmokeTestRequested() {
+        val state = mutableUiState.value
+        when {
+            state.isCloudSttSmokeTestRunning -> stopCloudSttSmokeTest()
+            state.isDebugRecording || state.isDebugPlaybackActive -> Unit
+            state.status == SttStatus.Listening || state.status == SttStatus.Connecting -> Unit
+            else -> requestCapture(PendingCapture.CloudSmokeTest)
         }
     }
 
@@ -146,6 +177,7 @@ class SttViewModel(
                 when (actionToStart) {
                     PendingCapture.Production -> startProductionCapture()
                     PendingCapture.DebugLoopback -> startDebugCapture()
+                    PendingCapture.CloudSmokeTest -> startCloudSttSmokeTest()
                     PendingCapture.None -> Unit
                 }
             }
@@ -207,6 +239,7 @@ class SttViewModel(
                         isDebugPlaybackActive = false,
                         debugCapturedBytes = 0,
                         debugBufferLimitReached = false,
+                        isCloudSttSmokeTestRunning = false,
                     )
                 }
 
@@ -271,6 +304,59 @@ class SttViewModel(
     }
 
     /**
+     * Checks only whether the local cloud speech token provider has a non-blank token available.
+     *
+     * @return This function has no return value.
+     *
+     * The main-thread event launches one [viewModelScope] child and never performs a network call.
+     * A typed missing-token failure maps to visible recoverable UI state; all other provider failures
+     * use a fixed non-secret message. Repeated requests while running are ignored, and ViewModel or
+     * Retry cancellation cancels a future broker-backed provider call cooperatively.
+     */
+    fun onCloudConfigurationCheckRequested() {
+        val current = mutableUiState.value
+        if (
+            current.isCloudConfigurationCheckRunning ||
+                current.status == SttStatus.Connecting ||
+                current.status == SttStatus.Listening ||
+                current.status == SttStatus.Stopping ||
+                current.isDebugRecording ||
+                current.isDebugPlaybackActive
+        ) {
+            return
+        }
+
+        mutableUiState.update {
+            it.copy(
+                status = if (it.status == SttStatus.Error) SttStatus.Idle else it.status,
+                errorMessage = null,
+                isCloudConfigurationCheckRunning = true,
+            )
+        }
+        cloudConfigurationJob =
+            viewModelScope.launch {
+                try {
+                    // Presence is all Phase 4 may verify. Discarding the value avoids retaining or
+                    // exposing it in ViewModel/UI state before Phase 5 constructs an authenticated call.
+                    accessTokenProvider.currentToken()
+                    mutableUiState.update {
+                        it.copy(
+                            cloudConfiguration = CloudConfigurationStatus.Configured,
+                            isCloudConfigurationCheckRunning = false,
+                            errorMessage = null,
+                        )
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: CloudSpeechNotConfiguredException) {
+                    showCloudNotConfigured()
+                } catch (error: Throwable) {
+                    showCloudProviderFailure()
+                }
+            }
+    }
+
+    /**
      * Clears a recoverable error while retaining permission information and committed transcripts.
      *
      * @return This function has no return value.
@@ -281,6 +367,7 @@ class SttViewModel(
     fun onRetryRequested() {
         pendingCapture = PendingCapture.None
         sessionJob?.cancel()
+        cloudConfigurationJob?.cancel()
         debugPcmBuffer = null
         mutableUiState.update {
             it.copy(
@@ -290,6 +377,8 @@ class SttViewModel(
                 isDebugPlaybackActive = false,
                 debugCapturedBytes = 0,
                 debugBufferLimitReached = false,
+                isCloudConfigurationCheckRunning = false,
+                isCloudSttSmokeTestRunning = false,
             )
         }
     }
@@ -322,13 +411,19 @@ class SttViewModel(
      * a permission request state, or exposes permanent-denial recovery; it throws no failure.
      */
     private fun requestCapture(requestedCapture: PendingCapture) {
-        if (mutableUiState.value.isDebugPlaybackActive) return
+        if (
+            mutableUiState.value.isDebugPlaybackActive ||
+                mutableUiState.value.isCloudSttSmokeTestRunning
+        ) {
+            return
+        }
         when (mutableUiState.value.microphonePermission) {
             MicrophonePermissionStatus.Granted -> {
                 pendingCapture = PendingCapture.None
                 when (requestedCapture) {
                     PendingCapture.Production -> startProductionCapture()
                     PendingCapture.DebugLoopback -> startDebugCapture()
+                    PendingCapture.CloudSmokeTest -> startCloudSttSmokeTest()
                     PendingCapture.None -> Unit
                 }
             }
@@ -350,7 +445,7 @@ class SttViewModel(
     }
 
     /**
-     * Starts real production capture and discards PCM only because cloud STT is out of Phase 3.
+     * Starts real production capture and discards PCM until Phase 6 connects the production client.
      *
      * @return This function has no return value.
      *
@@ -371,8 +466,8 @@ class SttViewModel(
         replaceSession {
             mutableUiState.update { it.copy(status = SttStatus.Listening) }
             try {
-                // Phase 3 intentionally consumes without transcription; MicRecorder logs count and
-                // sizes, and Phase 5 will replace this terminal collector with SttClient.stream.
+                // Production intentionally remains unchanged in Phase 5; Phase 6 replaces this
+                // terminal collector with SttClient.stream and owns transcript reduction.
                 audioCaptureSource.capture().collect()
                 mutableUiState.update { it.copy(status = SttStatus.Completed) }
             } catch (error: CancellationException) {
@@ -466,6 +561,136 @@ class SttViewModel(
     }
 
     /**
+     * Starts the separate DEBUG microphone-to-CloudSttClient verification path.
+     *
+     * @return This function has no return value.
+     *
+     * Called on the main thread, it replaces any prior session and collects in [viewModelScope]. The
+     * injected MicRecorder Flow and SttClient own their I/O dispatchers. Interim/final values update
+     * only cloud-smoke fields; production transcripts are untouched. Cancellation is rethrown and
+     * hidden, while fixed CloudSttClient failures become recoverable UI state without a hang.
+     */
+    private fun startCloudSttSmokeTest() {
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Connecting,
+                errorMessage = null,
+                isCloudSttSmokeTestRunning = false,
+                cloudSmokePartialTranscript = "",
+                cloudSmokeFinalTranscript = "",
+                cloudSmokeFinalConfidence = null,
+            )
+        }
+        replaceSession {
+            mutableUiState.update {
+                it.copy(status = SttStatus.Listening, isCloudSttSmokeTestRunning = true)
+            }
+            try {
+                debugCloudSttClient
+                    .stream(audioCaptureSource.capture())
+                    .collect { result -> reduceCloudSmokeResult(result) }
+                mutableUiState.update {
+                    it.copy(status = SttStatus.Completed, isCloudSttSmokeTestRunning = false)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: CloudSttException) {
+                showCloudSmokeFailure(error.message ?: CLOUD_STT_SMOKE_ERROR)
+            } catch (error: Throwable) {
+                showCloudSmokeFailure(CLOUD_STT_SMOKE_ERROR)
+            }
+        }
+    }
+
+    /**
+     * Stops the DEBUG cloud stream and exposes Completed only after RPC/microphone cancellation joins.
+     *
+     * @return This function has no return value.
+     *
+     * The main-thread event immediately exposes Stopping, then replaces the active structured
+     * session. CloudSttClient and MicRecorder observe cancellation and release their per-call/device
+     * resources before the replacement marks Completed; normal cancellation is never shown as error.
+     */
+    private fun stopCloudSttSmokeTest() {
+        mutableUiState.update {
+            it.copy(status = SttStatus.Stopping, isCloudSttSmokeTestRunning = false)
+        }
+        replaceSession {
+            mutableUiState.update {
+                it.copy(status = SttStatus.Completed, isCloudSttSmokeTestRunning = false)
+            }
+        }
+    }
+
+    /**
+     * Reduces one raw cloud smoke result into fields isolated from production transcript state.
+     *
+     * @param result provider-neutral interim or final value emitted by CloudSttClient.
+     * @return This function has no return value.
+     *
+     * Called on the main-confined ViewModel session coroutine. It performs no I/O or suspension and
+     * has no independent cancellation behavior. DEBUG logging contains recognized text/status only,
+     * never token or metadata. Blank provider text is ignored.
+     */
+    private fun reduceCloudSmokeResult(result: SttResult) {
+        val transcript = result.transcript.trim()
+        if (transcript.isEmpty()) return
+        logCloudSmokeResult(transcript, result.isFinal)
+        mutableUiState.update { current ->
+            if (result.isFinal) {
+                current.copy(
+                    cloudSmokePartialTranscript = "",
+                    cloudSmokeFinalTranscript =
+                        appendFinalTranscript(current.cloudSmokeFinalTranscript, transcript),
+                    cloudSmokeFinalConfidence = result.confidence,
+                )
+            } else {
+                current.copy(cloudSmokePartialTranscript = transcript)
+            }
+        }
+    }
+
+    /**
+     * Writes one DEBUG recognition value to logcat without affecting stream reduction.
+     *
+     * @param transcript normalized raw transcript returned by the cloud smoke stream.
+     * @param isFinal whether the value is a committed Google result rather than an interim result.
+     * @return This function has no return value.
+     *
+     * The call is synchronous on the ViewModel coroutine and starts no child work. Release builds
+     * skip logging. Android logging failures are deliberately isolated because verification logging
+     * must never turn a successful recognition stream into a user-visible failure; this also keeps
+     * the pure JVM reducer test independent of an Android runtime. No credential is included.
+     */
+    private fun logCloudSmokeResult(transcript: String, isFinal: Boolean) {
+        if (!BuildConfig.DEBUG) return
+        try {
+            Log.d(TAG, "Cloud STT smoke ${if (isFinal) "final" else "partial"}: $transcript")
+        } catch (_: RuntimeException) {
+            // Logging is diagnostic only; recognition/state must remain valid if logcat is absent.
+        }
+    }
+
+    /**
+     * Maps smoke-only cloud failure text to the existing recoverable error presentation.
+     *
+     * @param message fixed non-secret CloudSttClient message or local fallback.
+     * @return This function has no return value.
+     *
+     * Called on the main-confined session coroutine after per-call cleanup. It performs no I/O,
+     * logging, or suspension, owns no cancellation, and does not alter production transcripts.
+     */
+    private fun showCloudSmokeFailure(message: String) {
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Error,
+                errorMessage = message,
+                isCloudSttSmokeTestRunning = false,
+            )
+        }
+    }
+
+    /**
      * Copies the retained bounded PCM and awaits raw AudioTrack playback to its final frame.
      *
      * @return after playback completes and the UI returns to Completed.
@@ -542,6 +767,46 @@ class SttViewModel(
     }
 
     /**
+     * Maps the typed absent-token condition to a recoverable, non-secret UI error.
+     *
+     * @return This function has no return value.
+     *
+     * Called on the main-confined ViewModel coroutine after [AccessTokenProvider.currentToken]
+     * fails. It performs no I/O or suspension, has no independent cancellation behavior, and uses
+     * only the exception type's fixed message so credential values cannot reach logs or state.
+     */
+    private fun showCloudNotConfigured() {
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Error,
+                errorMessage = CloudSpeechNotConfiguredException.USER_MESSAGE,
+                cloudConfiguration = CloudConfigurationStatus.NotConfigured,
+                isCloudConfigurationCheckRunning = false,
+            )
+        }
+    }
+
+    /**
+     * Maps an unexpected future token-provider failure without exposing its exception message.
+     *
+     * @return This function has no return value.
+     *
+     * Called on the main-confined ViewModel coroutine. It performs no I/O, logging, or suspension,
+     * and has no independent cancellation behavior. A fixed message prevents a broker exception
+     * from accidentally disclosing an Authorization header or token through the UI.
+     */
+    private fun showCloudProviderFailure() {
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Error,
+                errorMessage = CLOUD_PROVIDER_ERROR,
+                cloudConfiguration = CloudConfigurationStatus.NotConfigured,
+                isCloudConfigurationCheckRunning = false,
+            )
+        }
+    }
+
+    /**
      * Appends one committed segment using a newline boundary suitable for the transcript log.
      *
      * @param existing previously committed transcript text.
@@ -569,6 +834,9 @@ class SttViewModel(
 
         /** Bounded debug capture followed by raw PCM playback. */
         DebugLoopback,
+
+        /** DEBUG-only MicRecorder → CloudSttClient round-trip verification. */
+        CloudSmokeTest,
     }
 
     /**
@@ -576,6 +844,9 @@ class SttViewModel(
      *
      * @param audioCaptureSource cold microphone source shared by both capture paths.
      * @param pcmAudioPlayer record-then-playback verifier.
+     * @param accessTokenProvider lazy provider for the debug-only local token presence check and
+     * future Phase 5 authentication.
+     * @param debugCloudSttClient provider-neutral streaming client used only by DEBUG smoke UI.
      *
      * Factory creation is synchronous on Android's main thread. It performs no audio I/O and owns no
      * cancellable resource; unsupported ViewModel types fail with [IllegalArgumentException].
@@ -583,6 +854,8 @@ class SttViewModel(
     class Factory(
         private val audioCaptureSource: AudioCaptureSource,
         private val pcmAudioPlayer: PcmAudioPlayer,
+        private val accessTokenProvider: AccessTokenProvider,
+        private val debugCloudSttClient: SttClient,
     ) : ViewModelProvider.Factory {
 
         /**
@@ -600,8 +873,27 @@ class SttViewModel(
             require(modelClass.isAssignableFrom(SttViewModel::class.java)) {
                 "Unsupported ViewModel class: ${modelClass.name}"
             }
-            return SttViewModel(audioCaptureSource, pcmAudioPlayer) as T
+            return SttViewModel(
+                audioCaptureSource,
+                pcmAudioPlayer,
+                accessTokenProvider,
+                debugCloudSttClient,
+            ) as T
         }
+    }
+
+    /**
+     * Releases the reusable DEBUG cloud client's channel when Android disposes this ViewModel.
+     *
+     * @return This lifecycle callback has no return value.
+     *
+     * Android invokes this on the main thread after lifecycle-owned coroutines are cancelled. The
+     * generic AutoCloseable check keeps UI independent of CloudSttClient/gRPC types; close is
+     * non-suspending, cancels active RPCs, and throws no expected project-specific failure.
+     */
+    override fun onCleared() {
+        (debugCloudSttClient as? AutoCloseable)?.close()
+        super.onCleared()
     }
 
     private companion object {
@@ -613,5 +905,8 @@ class SttViewModel(
         const val GENERIC_RECOVERY_ERROR = "The recovery action could not be opened. Please retry."
         const val CAPTURE_ERROR_FALLBACK = "Microphone capture failed. Please retry."
         const val PLAYBACK_ERROR_FALLBACK = "Debug audio playback failed. Please retry."
+        const val CLOUD_PROVIDER_ERROR =
+            "Cloud speech authentication is unavailable. Check local configuration and retry."
+        const val CLOUD_STT_SMOKE_ERROR = "Cloud STT test failed. Please retry."
     }
 }

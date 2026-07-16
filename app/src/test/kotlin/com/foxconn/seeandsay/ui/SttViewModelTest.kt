@@ -1,8 +1,13 @@
 package com.foxconn.seeandsay.ui
 
 import com.foxconn.seeandsay.MainDispatcherRule
+import com.foxconn.seeandsay.config.AccessTokenProvider
+import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
+import com.foxconn.seeandsay.config.FakeAccessTokenProvider
 import com.foxconn.seeandsay.speech.AudioCaptureSource
+import com.foxconn.seeandsay.speech.FakeSttClient
 import com.foxconn.seeandsay.speech.PcmAudioPlayer
+import com.foxconn.seeandsay.speech.SttClient
 import com.foxconn.seeandsay.speech.SttResult
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.flow
@@ -222,10 +227,84 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies a typed missing-token failure becomes recoverable UI state without breaking input.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] executes the suspend fake provider on the controlled main dispatcher. No credential,
+     * filesystem, or network I/O occurs. The test fails if the exception escapes, the message is not
+     * recoverable, Retry cannot restore Idle, or typed transcript injection gains a cloud dependency.
+     */
+    @Test
+    fun cloudNotConfiguredMapsToRecoverableStateAndTypedInputStillWorks() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val tokenProvider =
+                FakeAccessTokenProvider(failure = CloudSpeechNotConfiguredException())
+            val viewModel = createViewModel(accessTokenProvider = tokenProvider)
+
+            viewModel.onCloudConfigurationCheckRequested()
+
+            assertEquals(1, tokenProvider.requestCount)
+            assertEquals(SttStatus.Error, viewModel.uiState.value.status)
+            assertEquals(
+                CloudConfigurationStatus.NotConfigured,
+                viewModel.uiState.value.cloudConfiguration,
+            )
+            assertEquals(
+                CloudSpeechNotConfiguredException.USER_MESSAGE,
+                viewModel.uiState.value.errorMessage,
+            )
+
+            viewModel.onRetryRequested()
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+
+            viewModel.submitTypedTranscript("顯示")
+            assertEquals("顯示", viewModel.uiState.value.finalTranscript)
+        }
+
+    /**
+     * Verifies the Phase 5 DEBUG cloud path displays raw results without reducing production text.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] collects deterministic fake cloud values on the controlled main dispatcher. It
+     * performs no microphone or network I/O and fails if smoke results reach the production
+     * transcript reducer or if final-only confidence is lost. The finite fake Flow needs no manual
+     * cancellation.
+     */
+    @Test
+    fun cloudSmokeResultsRemainIsolatedFromProductionTranscript() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val cloudClient =
+                FakeSttClient {
+                    flow {
+                        emit(SttResult(transcript = "你", isFinal = false))
+                        emit(SttResult(transcript = "你好", isFinal = true, confidence = 0.87f))
+                    }
+                }
+            val viewModel = createViewModel(debugCloudSttClient = cloudClient)
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onCloudSttSmokeTestRequested()
+
+            val state = viewModel.uiState.value
+            assertEquals(SttStatus.Completed, state.status)
+            assertFalse(state.isCloudSttSmokeTestRunning)
+            assertTrue(state.cloudSmokePartialTranscript.isEmpty())
+            assertEquals("你好", state.cloudSmokeFinalTranscript)
+            assertEquals(0.87f, state.cloudSmokeFinalConfidence)
+            assertTrue(state.partialTranscript.isEmpty())
+            assertTrue(state.finalTranscript.isEmpty())
+        }
+
+    /**
      * Creates a ViewModel with a cold fake capture that remains active until collector cancellation.
      *
      * @param audioCaptureSource cold fake PCM source for the test scenario.
      * @param pcmAudioPlayer fake raw PCM sink for the test scenario.
+     * @param accessTokenProvider fake suspend token source for configuration checks.
+     * @param debugCloudSttClient deterministic provider-neutral cloud stream for smoke-test events.
      * @return ViewModel whose capture and playback boundaries perform no platform I/O.
      *
      * Creation is synchronous on the installed test main dispatcher. The Flow is cold and throws no
@@ -237,9 +316,13 @@ class SttViewModelTest {
                 flow { awaitCancellation() }
             },
         pcmAudioPlayer: PcmAudioPlayer = PcmAudioPlayer { },
+        accessTokenProvider: AccessTokenProvider = FakeAccessTokenProvider(),
+        debugCloudSttClient: SttClient = FakeSttClient(),
     ): SttViewModel =
         SttViewModel(
             audioCaptureSource = audioCaptureSource,
             pcmAudioPlayer = pcmAudioPlayer,
+            accessTokenProvider = accessTokenProvider,
+            debugCloudSttClient = debugCloudSttClient,
         )
 }

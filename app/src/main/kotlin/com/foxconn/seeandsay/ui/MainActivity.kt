@@ -17,6 +17,8 @@ import androidx.compose.runtime.getValue
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.foxconn.seeandsay.config.BuildConfigAccessTokenProvider
+import com.foxconn.seeandsay.speech.CloudSttClient
 import com.foxconn.seeandsay.speech.DebugAudioPlayer
 import com.foxconn.seeandsay.speech.MicRecorder
 
@@ -25,16 +27,20 @@ import com.foxconn.seeandsay.speech.MicRecorder
  *
  * The activity translates platform permission results into provider-neutral ViewModel events. It
  * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
- * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected Phase
- * 3 audio components. Permission requests can be denied or suppressed by Android; both outcomes are
- * converted to recoverable UI state rather than thrown to the caller.
+ * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected audio
+ * components, the local-only token-presence check, and Phase 5's isolated cloud smoke stream.
+ * Permission requests can be denied or suppressed by Android; both outcomes become recoverable UI
+ * state rather than escaping.
  */
 class MainActivity : ComponentActivity() {
 
     private val sttViewModel: SttViewModel by viewModels {
+        val accessTokenProvider = BuildConfigAccessTokenProvider()
         SttViewModel.Factory(
             audioCaptureSource = MicRecorder(applicationContext),
             pcmAudioPlayer = DebugAudioPlayer(),
+            accessTokenProvider = accessTokenProvider,
+            debugCloudSttClient = CloudSttClient(accessTokenProvider),
         )
     }
 
@@ -55,7 +61,7 @@ class MainActivity : ComponentActivity() {
         }
 
     /**
-     * Creates the activity and installs the lifecycle-aware Phase 3 Compose debug screen.
+     * Creates the activity and installs the lifecycle-aware M1.1 Compose debug screen.
      *
      * @param savedInstanceState framework state from a prior activity instance, or `null` for a new
      * instance.
@@ -78,6 +84,9 @@ class MainActivity : ComponentActivity() {
                         onStart = ::handleStartRequest,
                         onStop = sttViewModel::onStopRequested,
                         onDebugRecordAndPlayback = ::handleDebugRecordAndPlaybackRequest,
+                        onCloudSttSmokeTest = ::handleCloudSttSmokeTestRequest,
+                        onCloudConfigurationCheck =
+                            sttViewModel::onCloudConfigurationCheckRequested,
                         onRetry = sttViewModel::onRetryRequested,
                         onOpenSettings = ::openApplicationSettings,
                         onTypedTranscriptSubmitted = sttViewModel::submitTypedTranscript,
@@ -136,6 +145,27 @@ class MainActivity : ComponentActivity() {
         }
 
         sttViewModel.onDebugRecordAndPlaybackRequested()
+        if (sttViewModel.uiState.value.status == SttStatus.RequestingPermission) {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    /**
+     * Starts or stops the DEBUG microphone-to-Google streaming smoke test.
+     *
+     * @return This function has no return value.
+     *
+     * The function runs on Android's main thread. First use delegates microphone permission to the
+     * existing Activity Result flow; granted requests are owned and cancelled by the ViewModel. A
+     * denied request stays recoverable, and this function performs no network or microphone work
+     * itself.
+     */
+    private fun handleCloudSttSmokeTestRequest() {
+        if (hasMicrophonePermission()) {
+            sttViewModel.onMicrophonePermissionObserved(isGranted = true)
+        }
+
+        sttViewModel.onCloudSttSmokeTestRequested()
         if (sttViewModel.uiState.value.status == SttStatus.RequestingPermission) {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
