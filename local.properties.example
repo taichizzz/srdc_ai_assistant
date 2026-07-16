@@ -6,6 +6,12 @@ sdk.dir=/absolute/path/to/Android/sdk
 # The Speech-to-Text API and billing/quota must already be enabled for this project.
 GCP_STT_PROJECT_ID=
 
+# DEBUG BUILDS ONLY: V2 regional endpoint/recognizer location used for Chirp evaluation.
+# asia-southeast1 is the default because current Google documentation lists Taiwan Mandarin for
+# Chirp 2 there and Chirp 3 is regionally available there. Model/region availability can change;
+# confirm it with Google's Locations API before a formal comparison. Release builds keep this empty.
+GCP_STT_LOCATION=asia-southeast1
+
 # DEBUG BUILDS ONLY: paste a short-lived OAuth access token generated with:
 #   gcloud auth print-access-token
 # The token normally expires after about one hour. Never paste a service-account JSON, refresh

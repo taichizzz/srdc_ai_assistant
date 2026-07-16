@@ -17,6 +17,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -361,6 +362,52 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies the DEBUG selector routes Chirp 2 and Chirp 3 without touching production text.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] injects finite provider-neutral fakes for both V2 choices and performs no microphone,
+     * Google, gRPC, logging, or real-time work. It fails if selection labels/results/metrics mismatch,
+     * if a client is reused incorrectly, or if debug finals enter the production reducer.
+     */
+    @Test
+    fun debugEngineSelectorRoutesChirpClientsAndKeepsProductionIsolated() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val chirp2 =
+                FakeSttClient {
+                    flowOf(SttResult("Chirp 2 result", isFinal = true, confidence = 0.8f))
+                }
+            val chirp3 =
+                FakeSttClient {
+                    flowOf(SttResult("Chirp 3 result", isFinal = true, confidence = 0.9f))
+                }
+            val viewModel =
+                createViewModel(
+                    debugChirp2SttClient = chirp2,
+                    debugChirp3SttClient = chirp3,
+                )
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onDebugSttEngineSelected(DebugSttEngine.V2Chirp2)
+            viewModel.onCloudSttSmokeTestRequested()
+
+            assertEquals("Chirp 2 result", viewModel.uiState.value.cloudSmokeFinalTranscript)
+            assertEquals(
+                DebugSttEngine.V2Chirp2,
+                viewModel.uiState.value.debugSttMetrics?.engine,
+            )
+
+            viewModel.onDebugSttEngineSelected(DebugSttEngine.V2Chirp3)
+            viewModel.onCloudSttSmokeTestRequested()
+
+            val state = viewModel.uiState.value
+            assertEquals("Chirp 3 result", state.cloudSmokeFinalTranscript)
+            assertEquals(DebugSttEngine.V2Chirp3, state.debugSttMetrics?.engine)
+            assertEquals(DebugSttOutcome.Success, state.debugSttMetrics?.outcome)
+            assertTrue(state.finalTranscript.isEmpty())
+        }
+
+    /**
      * Verifies production interim replacement and final append/partial-clear reduction.
      *
      * @return This test has no return value.
@@ -620,7 +667,10 @@ class SttViewModelTest {
      * @param accessTokenProvider fake suspend token source for configuration checks.
      * @param apiKeyProvider fake suspend API-key source for configuration checks.
      * @param productionSttClient deterministic recognizer for normal Start/Stop sessions.
-     * @param debugCloudSttClient deterministic provider-neutral cloud stream for smoke-test events.
+     * @param debugCloudSttClient deterministic V1 baseline stream for smoke-test events.
+     * @param debugChirp2SttClient deterministic Chirp 2 stream; defaults to the V1 fake.
+     * @param debugChirp3SttClient deterministic Chirp 3 stream; defaults to the V1 fake.
+     * @param monotonicClock fake timing source for DEBUG evaluation metrics.
      * @return ViewModel whose capture and playback boundaries perform no platform I/O.
      *
      * Creation is synchronous on the installed test main dispatcher. The Flow is cold and throws no
@@ -639,6 +689,9 @@ class SttViewModelTest {
                 flow { audio.collect() }
             },
         debugCloudSttClient: SttClient = FakeSttClient(),
+        debugChirp2SttClient: SttClient = debugCloudSttClient,
+        debugChirp3SttClient: SttClient = debugCloudSttClient,
+        monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
     ): SttViewModel =
         SttViewModel(
             audioCaptureSource = audioCaptureSource,
@@ -646,6 +699,9 @@ class SttViewModelTest {
             accessTokenProvider = accessTokenProvider,
             apiKeyProvider = apiKeyProvider,
             productionSttClient = productionSttClient,
-            debugCloudSttClient = debugCloudSttClient,
+            debugV1SttClient = debugCloudSttClient,
+            debugChirp2SttClient = debugChirp2SttClient,
+            debugChirp3SttClient = debugChirp3SttClient,
+            monotonicClock = monotonicClock,
         )
 }

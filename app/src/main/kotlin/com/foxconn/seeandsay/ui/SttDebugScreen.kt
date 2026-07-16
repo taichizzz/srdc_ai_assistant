@@ -14,6 +14,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import com.foxconn.seeandsay.R
  * @param onStop invoked when the user requests microphone release and final-result draining.
  * @param onDebugRecordAndPlayback invoked to start debug recording or stop it and play retained PCM.
  * @param onCloudSttSmokeTest invoked to start or stop the isolated DEBUG cloud round trip.
+ * @param onDebugSttEngineSelected invoked to select only the next DEBUG comparison client.
  * @param onCloudConfigurationCheck invoked to inspect local key/token presence without a network call.
  * @param onRetry invoked to clear a recoverable error.
  * @param onOpenSettings invoked when permanent permission denial requires Android Settings.
@@ -53,6 +55,7 @@ fun SttDebugScreen(
     onStop: () -> Unit,
     onDebugRecordAndPlayback: () -> Unit,
     onCloudSttSmokeTest: () -> Unit,
+    onDebugSttEngineSelected: (DebugSttEngine) -> Unit,
     onCloudConfigurationCheck: () -> Unit,
     onRetry: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -171,6 +174,85 @@ fun SttDebugScreen(
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
+                text = stringResource(R.string.cloud_stt_engine_selector),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            DebugSttEngine.entries.forEach { engine ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RadioButton(
+                        selected = state.selectedDebugSttEngine == engine,
+                        onClick = { onDebugSttEngineSelected(engine) },
+                        enabled = !isAudioBusy,
+                    )
+                    Text(
+                        text = engine.displayName,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+            }
+            state.debugSttMetrics?.let { metrics ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.cloud_stt_metrics_title),
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            stringResource(
+                                R.string.cloud_stt_metrics_engine,
+                                metrics.engine.apiVersion,
+                                metrics.engine.model,
+                            ),
+                        )
+                        Text(
+                            stringResource(
+                                R.string.cloud_stt_metrics_first_token,
+                                metrics.firstTokenLatencyMs?.toString()
+                                    ?: stringResource(R.string.cloud_stt_metrics_unavailable),
+                            ),
+                        )
+                        Text(
+                            stringResource(
+                                R.string.cloud_stt_metrics_final,
+                                metrics.finalSentenceLatencyMs?.toString()
+                                    ?: stringResource(R.string.cloud_stt_metrics_unavailable),
+                            ),
+                        )
+                        Text(
+                            stringResource(
+                                R.string.cloud_stt_metrics_total,
+                                metrics.totalLatencyMs?.toString()
+                                    ?: stringResource(R.string.cloud_stt_metrics_unavailable),
+                            ),
+                        )
+                        Text(
+                            stringResource(
+                                R.string.cloud_stt_metrics_outcome,
+                                metrics.outcome.csvValue,
+                            ),
+                        )
+                        Text(
+                            text = stringResource(R.string.cloud_stt_metrics_auto_rubric),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            text = stringResource(R.string.cloud_stt_metrics_manual_note),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            text = stringResource(R.string.cloud_stt_metrics_log_note),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+            Text(
                 text = stringResource(R.string.cloud_stt_smoke_partial_label),
                 style = MaterialTheme.typography.labelLarge,
             )
@@ -205,7 +287,11 @@ fun SttDebugScreen(
                         (!isSessionActive || state.isCloudSttSmokeTestRunning),
             ) {
                 Text(
-                    if (state.isCloudSttSmokeTestRunning) {
+                    if (
+                        state.isCloudSttSmokeTestRunning ||
+                            (state.status == SttStatus.Stopping &&
+                                state.debugSttMetrics?.outcome == DebugSttOutcome.Running)
+                    ) {
                         stringResource(R.string.cloud_stt_smoke_stop)
                     } else {
                         stringResource(R.string.cloud_stt_smoke_start)

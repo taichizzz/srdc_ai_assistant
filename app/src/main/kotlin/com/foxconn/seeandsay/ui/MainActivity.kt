@@ -17,9 +17,12 @@ import androidx.compose.runtime.getValue
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.config.BuildConfigAccessTokenProvider
 import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
+import com.foxconn.seeandsay.config.GcpSttV2Config
 import com.foxconn.seeandsay.speech.CloudSttClient
+import com.foxconn.seeandsay.speech.CloudSttV2Client
 import com.foxconn.seeandsay.speech.DebugAudioPlayer
 import com.foxconn.seeandsay.speech.MicRecorder
 
@@ -29,9 +32,9 @@ import com.foxconn.seeandsay.speech.MicRecorder
  * The activity translates platform permission results into provider-neutral ViewModel events. It
  * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
  * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected audio
- * components, the local-only credential-presence check, production cloud recognition, and the
- * isolated cloud smoke stream. Permission requests can be denied or suppressed by Android; both
- * outcomes become recoverable UI state rather than escaping.
+ * components, the local-only credential-presence check, unchanged V1 production recognition, and
+ * isolated V1/Chirp DEBUG comparison clients. Permission requests can be denied or suppressed by
+ * Android; both outcomes become recoverable UI state rather than escaping.
  */
 class MainActivity : ComponentActivity() {
 
@@ -39,13 +42,37 @@ class MainActivity : ComponentActivity() {
         val accessTokenProvider = BuildConfigAccessTokenProvider()
         val apiKeyProvider = BuildConfigApiKeyProvider()
         val cloudSttClient = CloudSttClient(accessTokenProvider, apiKeyProvider)
+        val chirp2Client =
+            if (BuildConfig.DEBUG) {
+                CloudSttV2Client(
+                    accessTokenProvider = accessTokenProvider,
+                    apiKeyProvider = apiKeyProvider,
+                    model = GcpSttV2Config.CHIRP_2_MODEL,
+                )
+            } else {
+                // Release has no selector or V2 dev location, so reuse V1 without allocating
+                // unreachable regional channels that can never be selected.
+                cloudSttClient
+            }
+        val chirp3Client =
+            if (BuildConfig.DEBUG) {
+                CloudSttV2Client(
+                    accessTokenProvider = accessTokenProvider,
+                    apiKeyProvider = apiKeyProvider,
+                    model = GcpSttV2Config.CHIRP_3_MODEL,
+                )
+            } else {
+                cloudSttClient
+            }
         SttViewModel.Factory(
             audioCaptureSource = MicRecorder(applicationContext),
             pcmAudioPlayer = DebugAudioPlayer(),
             accessTokenProvider = accessTokenProvider,
             apiKeyProvider = apiKeyProvider,
             productionSttClient = cloudSttClient,
-            debugCloudSttClient = cloudSttClient,
+            debugV1SttClient = cloudSttClient,
+            debugChirp2SttClient = chirp2Client,
+            debugChirp3SttClient = chirp3Client,
         )
     }
 
@@ -90,6 +117,7 @@ class MainActivity : ComponentActivity() {
                         onStop = sttViewModel::onStopRequested,
                         onDebugRecordAndPlayback = ::handleDebugRecordAndPlaybackRequest,
                         onCloudSttSmokeTest = ::handleCloudSttSmokeTestRequest,
+                        onDebugSttEngineSelected = sttViewModel::onDebugSttEngineSelected,
                         onCloudConfigurationCheck =
                             sttViewModel::onCloudConfigurationCheckRequested,
                         onRetry = sttViewModel::onRetryRequested,

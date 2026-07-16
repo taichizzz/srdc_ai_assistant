@@ -83,7 +83,9 @@ enum class CloudConfigurationStatus {
  * @property debugBufferLimitReached whether the ten-second memory cap stopped debug recording.
  * @property cloudConfiguration local API-key/token presence without exposing credential content.
  * @property isCloudConfigurationCheckRunning whether the suspend provider check is active.
- * @property isCloudSttSmokeTestRunning whether DEBUG mic audio is routed only to CloudSttClient.
+ * @property selectedDebugSttEngine engine/model selected for the DEBUG cloud test only.
+ * @property debugSttMetrics latest running/completed DEBUG evaluation measurements.
+ * @property isCloudSttSmokeTestRunning whether DEBUG mic audio is routed to the selected SttClient.
  * @property cloudSmokePartialTranscript latest raw interim text from the DEBUG cloud stream.
  * @property cloudSmokeFinalTranscript committed raw text from the DEBUG cloud stream.
  * @property cloudSmokeFinalConfidence final-only confidence from the latest DEBUG result.
@@ -104,6 +106,8 @@ data class SttUiState(
     val debugBufferLimitReached: Boolean = false,
     val cloudConfiguration: CloudConfigurationStatus = CloudConfigurationStatus.NotChecked,
     val isCloudConfigurationCheckRunning: Boolean = false,
+    val selectedDebugSttEngine: DebugSttEngine = DebugSttEngine.V1LatestShort,
+    val debugSttMetrics: DebugSttMetrics? = null,
     val isCloudSttSmokeTestRunning: Boolean = false,
     val cloudSmokePartialTranscript: String = "",
     val cloudSmokeFinalTranscript: String = "",

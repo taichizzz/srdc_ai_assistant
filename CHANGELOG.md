@@ -15,6 +15,77 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — DEBUG STT V1 / Chirp 2 / Chirp 3 evaluation
+
+### Added
+
+- Added `config/GcpSttV2Config.kt` with non-secret V2 model, Taiwan-Mandarin,
+  explicit PCM, regional endpoint, and inline-recognizer resource configuration.
+- Added `speech/CloudSttV2Client.kt`, a provider-neutral `SttClient` implementation
+  for V2 `chirp_2` and `chirp_3` using regional TLS gRPC, config-first streaming,
+  bounded audio/result buffers, final-only confidence, recoverable status mapping,
+  prompt cancellation, and reusable channel disposal.
+- Added a DEBUG-only V1 / Chirp 2 / Chirp 3 selector in `ui/SttDebugScreen.kt`, with
+  all three provider-neutral clients composed in `ui/MainActivity.kt`. The existing
+  V1 client remains the normal production Start/Stop client.
+- Added `ui/DebugSttEngine.kt` and `ui/DebugSttMetrics.kt` to measure first-token,
+  Stop-to-final, and total latency with a monotonic clock; classify each outcome;
+  display the comparison evidence; and emit one CSV-friendly `SttMetricsCsv` log
+  row per DEBUG run without credentials or raw audio.
+- Added deterministic in-process V2 gRPC tests covering config-first request order,
+  inline recognizer, both model identifiers, explicit audio settings, interim/final
+  mapping, final-only confidence, mutually exclusive API-key/bearer metadata,
+  recoverable statuses, and collector cancellation.
+- Added a virtual-time metrics test and ViewModel selection test proving latency
+  boundaries, CSV formatting, V1/Chirp client routing, and production V1 isolation.
+
+### Changed
+
+- Changed `app/build.gradle.kts` to add
+  `com.google.api.grpc:grpc-google-cloud-speech-v2:4.74.0`, retaining the gRPC 1.76.0
+  BOM and Android `grpc-okhttp` transport; V1 remains at the matching 4.74.0 stub.
+- Added debug-only `GCP_STT_LOCATION` injection from gitignored `local.properties`;
+  default and release BuildConfig keep it empty. Updated `local.properties.example`
+  with project/location setup and availability cautions.
+- Extended DEBUG-only fields in `ui/SttUiState.kt`, `ui/SttViewModel.kt`, Compose
+  strings, and screen rendering for engine selection, isolated raw transcripts,
+  evaluation timings, outcome, rubric guidance, and CSV logging.
+- Updated `docs/demos/M1.1.md` with a reproducible same-utterance comparison, CSV
+  schema, automatic scoring definitions, manual/external criteria, and explicit
+  live-GCP/device requirements.
+
+### Notes
+
+- Chose V2 explicit decoding (`LINEAR16`, 16 kHz, mono) because it exactly matches
+  MicRecorder output and avoids ambiguity or transcoding during model comparison.
+- Chose the V2 implicit recognizer path
+  `projects/{project}/locations/{location}/recognizers/_` because model/language/
+  decoding are supplied inline and no persistent recognizer resource is needed.
+- Chose `asia-southeast1` as the DEBUG default because current Google tables list
+  `cmn-Hant-TW` for Chirp 2 and Chirp 3 there and it is geographically suitable for
+  Taiwan testing; it remains configurable because regional/model availability can
+  change and must be confirmed before evaluation.
+- Kept API-key precedence over bearer authentication, with exactly one credential
+  per RPC, because it matches the existing approved V1 behavior. V2 additionally
+  requires a non-blank project ID for its recognizer resource.
+- Split audio requests at 15,000 bytes because Google V2 limits each streaming audio
+  field to 15 KB; retained a four-chunk upstream buffer and bounded result bridge so
+  a slow uplink or UI collector cannot grow memory without limit.
+- Measured first token from the first audio chunk requested by the selected client
+  to the first non-blank interim, final latency only from Stop to a later final, and
+  total latency from stream start to final. These distinct monotonic boundaries map
+  directly to the supplied evaluation rubric without changing `SttResult`.
+- Kept the comparison harness isolated from production transcripts and routing:
+  `CloudSttClient` V1 internals, `SttClient`, `SttResult`, and normal production Start
+  are unchanged.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`:
+  all 41 unit tests passed, debug/release APKs assembled, and Android lint completed
+  without a blocking issue. Resolved runtime dependencies contain `grpc-okhttp`
+  1.76.0 and no `grpc-netty` transport.
+- Live API-key/token acceptance, project IAM/quota, current Chirp 2/3 availability
+  in the configured region, Mandarin recognition quality/latency, and microphone/
+  network conditions remain real-device/live-GCP verification items.
+
 ## [2026-07-16] — M1.1 closeout: timeout, credential check, and acceptance
 
 ### Added

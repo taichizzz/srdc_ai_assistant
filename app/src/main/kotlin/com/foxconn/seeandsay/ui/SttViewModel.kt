@@ -12,6 +12,7 @@ import com.foxconn.seeandsay.speech.AudioCaptureSource
 import com.foxconn.seeandsay.speech.AudioConfig
 import com.foxconn.seeandsay.speech.BoundedPcmBuffer
 import com.foxconn.seeandsay.speech.CloudSttException
+import com.foxconn.seeandsay.speech.CloudSttFailureReason
 import com.foxconn.seeandsay.speech.PcmAudioPlayer
 import com.foxconn.seeandsay.speech.SttClient
 import com.foxconn.seeandsay.speech.SttResult
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.update
@@ -39,7 +41,10 @@ import kotlinx.coroutines.launch
  * @param accessTokenProvider provider-neutral, suspendable source for cloud bearer tokens.
  * @param apiKeyProvider provider-neutral, suspendable source for an optional plain API key.
  * @param productionSttClient provider-neutral recognizer used by the normal Start/Stop flow.
- * @param debugCloudSttClient provider-neutral cloud stream used only by Phase 5's DEBUG smoke test.
+ * @param debugV1SttClient existing V1 baseline used only by the DEBUG comparison harness.
+ * @param debugChirp2SttClient V2 Chirp 2 client used only by the DEBUG comparison harness.
+ * @param debugChirp3SttClient V2 Chirp 3 client used only by the DEBUG comparison harness.
+ * @param monotonicClock clock used only for DEBUG latency metrics; tests inject virtual time.
  *
  * Public event methods are intended for Android's main thread. Capture and playback are children of
  * [viewModelScope]; replacing or clearing a session cancels and joins its predecessor so microphone
@@ -52,7 +57,10 @@ class SttViewModel(
     private val accessTokenProvider: AccessTokenProvider,
     private val apiKeyProvider: ApiKeyProvider,
     private val productionSttClient: SttClient,
-    private val debugCloudSttClient: SttClient,
+    private val debugV1SttClient: SttClient,
+    private val debugChirp2SttClient: SttClient,
+    private val debugChirp3SttClient: SttClient,
+    private val monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
 ) : ViewModel() {
 
     private val mutableUiState = MutableStateFlow(SttUiState())
@@ -71,6 +79,12 @@ class SttViewModel(
 
     /** Main-thread-confined owner identity for [productionTimeoutJob], or `null` when disarmed. */
     private var productionTimeoutSessionId: Long? = null
+
+    /** Structured microphone child feeding the active DEBUG comparison RPC. */
+    private var debugCloudCaptureJob: Job? = null
+
+    /** Main-confined timing accumulator for the active DEBUG comparison run. */
+    private var debugSttMetricsTracker: DebugSttMetricsTracker? = null
 
     /**
      * Exposes immutable, lifecycle-friendly UI state to the activity and Compose screen.
@@ -159,14 +173,14 @@ class SttViewModel(
     }
 
     /**
-     * Starts or stops the DEBUG-only CloudSttClient microphone round-trip verification session.
+     * Starts or stops the DEBUG-only selected-engine microphone round-trip evaluation session.
      *
      * @return This function has no return value.
      *
      * The event is intended for the main thread and follows the existing first-use mic permission
-     * path. Starting launches one lifecycle-owned cloud stream; stopping cancels/joins it through the
-     * shared session chain so both microphone and RPC release. Results update only dedicated smoke
-     * fields and never call the production [onSttResult] reducer. Failures become recoverable state.
+     * path. Starting launches one lifecycle-owned selected [SttClient]; stopping ends microphone
+     * input and lets that stream half-close/drain its final response. Results/metrics update only
+     * dedicated DEBUG fields and never call production [onSttResult]. Failures remain recoverable.
      */
     fun onCloudSttSmokeTestRequested() {
         val state = mutableUiState.value
@@ -175,6 +189,37 @@ class SttViewModel(
             state.isDebugRecording || state.isDebugPlaybackActive -> Unit
             state.status == SttStatus.Listening || state.status == SttStatus.Connecting -> Unit
             else -> requestCapture(PendingCapture.CloudSmokeTest)
+        }
+    }
+
+    /**
+     * Selects the API/model used by the next DEBUG cloud comparison run.
+     *
+     * @param engine V1 baseline, V2 Chirp 2, or V2 Chirp 3 selection.
+     * @return This function has no return value.
+     *
+     * The synchronous main-thread event is ignored while any cloud smoke run is active so a single
+     * run cannot mix engines or corrupt its metrics label. It performs no audio/network work, owns
+     * no coroutine, throws no project-specific failure, and never changes production's V1 client.
+     */
+    fun onDebugSttEngineSelected(engine: DebugSttEngine) {
+        val state = mutableUiState.value
+        if (
+            !BuildConfig.DEBUG ||
+                state.isCloudSttSmokeTestRunning ||
+                (state.status == SttStatus.Stopping &&
+                    state.debugSttMetrics?.outcome == DebugSttOutcome.Running)
+        ) {
+            return
+        }
+        mutableUiState.update {
+            it.copy(
+                selectedDebugSttEngine = engine,
+                debugSttMetrics = null,
+                cloudSmokePartialTranscript = "",
+                cloudSmokeFinalTranscript = "",
+                cloudSmokeFinalConfidence = null,
+            )
         }
     }
 
@@ -691,65 +736,116 @@ class SttViewModel(
     }
 
     /**
-     * Starts the separate DEBUG microphone-to-CloudSttClient verification path.
+     * Starts one isolated DEBUG microphone-to-selected-engine comparison run.
      *
      * @return This function has no return value.
      *
-     * Called on the main thread, it replaces any prior session and collects in [viewModelScope]. The
-     * injected MicRecorder Flow and SttClient own their I/O dispatchers. Interim/final values update
-     * only cloud-smoke fields; production transcripts are untouched. Cancellation is rethrown and
-     * hidden, while fixed CloudSttClient failures become recoverable UI state without a hang.
+     * Called on the main thread, it snapshots the selector, replaces the prior session, and creates
+     * a bounded audio channel. MicRecorder and the selected [SttClient] remain structured children.
+     * Timing is measured around the audio/result Flow without changing [SttResult]. Normal Stop
+     * drains finals; cloud/audio failures finish one metrics record and become recoverable UI state.
      */
     private fun startCloudSttSmokeTest() {
+        val engine = mutableUiState.value.selectedDebugSttEngine
+        val tracker = DebugSttMetricsTracker(engine, monotonicClock)
+        debugSttMetricsTracker = tracker
         mutableUiState.update {
             it.copy(
                 status = SttStatus.Connecting,
                 errorMessage = null,
                 isCloudSttSmokeTestRunning = false,
+                debugSttMetrics = tracker.snapshot(),
                 cloudSmokePartialTranscript = "",
                 cloudSmokeFinalTranscript = "",
                 cloudSmokeFinalConfidence = null,
             )
         }
         replaceSession {
-            mutableUiState.update {
-                it.copy(status = SttStatus.Listening, isCloudSttSmokeTestRunning = true)
-            }
+            val audioChannel = Channel<ByteArray>(capacity = DEBUG_CLOUD_AUDIO_BUFFER_CAPACITY)
             try {
-                debugCloudSttClient
-                    .stream(audioCaptureSource.capture())
-                    .collect { result -> reduceCloudSmokeResult(result) }
+                coroutineScope {
+                    val captureJob =
+                        launch {
+                            try {
+                                audioCaptureSource.capture().collect { chunk ->
+                                    audioChannel.send(chunk)
+                                }
+                            } finally {
+                                // Metrics Stop and cloud half-close must observe MicRecorder cleanup
+                                // before the input Flow completes, preserving the echo rule.
+                                audioChannel.close()
+                            }
+                        }
+                    debugCloudCaptureJob = captureJob
+                    mutableUiState.update {
+                        it.copy(status = SttStatus.Listening, isCloudSttSmokeTestRunning = true)
+                    }
+                    tracker.onStreamStarted()
+                    try {
+                        selectedDebugSttClient(engine)
+                            .stream(
+                                audioChannel
+                                    .receiveAsFlow()
+                                    .onEach { chunk ->
+                                        if (chunk.isNotEmpty()) {
+                                            tracker.onAudioChunkSent()
+                                            publishDebugSttMetrics(tracker.snapshot())
+                                        }
+                                    },
+                            ).collect { result ->
+                                tracker.onResult(result)
+                                reduceCloudSmokeResult(result)
+                                publishDebugSttMetrics(tracker.snapshot())
+                            }
+                    } finally {
+                        captureJob.cancelAndJoin()
+                    }
+                }
+                val outcome =
+                    if (tracker.hasFinalResult()) {
+                        DebugSttOutcome.Success
+                    } else {
+                        DebugSttOutcome.NoFinalResult
+                    }
+                finishDebugSttMetrics(tracker, outcome)
                 mutableUiState.update {
                     it.copy(status = SttStatus.Completed, isCloudSttSmokeTestRunning = false)
                 }
             } catch (error: CancellationException) {
+                finishDebugSttMetrics(tracker, DebugSttOutcome.Cancelled)
                 throw error
             } catch (error: CloudSttException) {
+                finishDebugSttMetrics(tracker, mapDebugSttOutcome(error))
                 showCloudSmokeFailure(error.message ?: CLOUD_STT_SMOKE_ERROR)
             } catch (error: Throwable) {
+                finishDebugSttMetrics(tracker, DebugSttOutcome.Unknown)
                 showCloudSmokeFailure(CLOUD_STT_SMOKE_ERROR)
+            } finally {
+                audioChannel.close()
+                debugCloudCaptureJob = null
+                if (debugSttMetricsTracker === tracker) debugSttMetricsTracker = null
             }
         }
     }
 
     /**
-     * Stops the DEBUG cloud stream and exposes Completed only after RPC/microphone cancellation joins.
+     * Stops DEBUG microphone input while allowing the selected cloud stream to return its final.
      *
      * @return This function has no return value.
      *
-     * The main-thread event immediately exposes Stopping, then replaces the active structured
-     * session. CloudSttClient and MicRecorder observe cancellation and release their per-call/device
-     * resources before the replacement marks Completed; normal cancellation is never shown as error.
+     * The synchronous main-thread event records end-of-audio, exposes Stopping, and cancels only the
+     * structured capture child. Its finally releases MicRecorder and closes the audio channel; the
+     * selected client then half-closes/drains within its own bounded final wait. Repeated Stop is
+     * harmless, normal cancellation is hidden, and production STT is untouched.
      */
     private fun stopCloudSttSmokeTest() {
+        val tracker = debugSttMetricsTracker
+        tracker?.onStopRequested()
+        tracker?.snapshot()?.let(::publishDebugSttMetrics)
         mutableUiState.update {
             it.copy(status = SttStatus.Stopping, isCloudSttSmokeTestRunning = false)
         }
-        replaceSession {
-            mutableUiState.update {
-                it.copy(status = SttStatus.Completed, isCloudSttSmokeTestRunning = false)
-            }
-        }
+        debugCloudCaptureJob?.cancel()
     }
 
     /**
@@ -777,6 +873,93 @@ class SttViewModel(
             } else {
                 current.copy(cloudSmokePartialTranscript = transcript)
             }
+        }
+    }
+
+    /**
+     * Selects the injected provider-neutral client for one immutable DEBUG engine snapshot.
+     *
+     * @param engine selector value captured before the run begins.
+     * @return corresponding V1, Chirp 2, or Chirp 3 [SttClient].
+     *
+     * This pure main-confined lookup performs no I/O, starts no coroutine, and cannot expose a gRPC
+     * type. Exhaustive enum matching prevents silent fallback to production when a new engine is added.
+     */
+    private fun selectedDebugSttClient(engine: DebugSttEngine): SttClient =
+        when (engine) {
+            DebugSttEngine.V1LatestShort -> debugV1SttClient
+            DebugSttEngine.V2Chirp2 -> debugChirp2SttClient
+            DebugSttEngine.V2Chirp3 -> debugChirp3SttClient
+        }
+
+    /**
+     * Publishes one immutable running/completed metrics snapshot to the DEBUG panel.
+     *
+     * @param metrics non-secret timing/outcome/transcript snapshot.
+     * @return This function has no return value.
+     *
+     * Called on the main-confined ViewModel event/session path, it performs no I/O or suspension and
+     * owns no cancellation resource. StateFlow publication may fail only through normal allocation.
+     */
+    private fun publishDebugSttMetrics(metrics: DebugSttMetrics) {
+        mutableUiState.update { it.copy(debugSttMetrics = metrics) }
+    }
+
+    /**
+     * Freezes one DEBUG run's outcome, updates the panel, and emits its single CSV log line.
+     *
+     * @param tracker timing/transcript accumulator owned by the completing run.
+     * @param outcome success, cancellation, or recoverable failure category.
+     * @return This function has no return value.
+     *
+     * The synchronous main-confined method performs no network/audio work and starts no coroutine.
+     * Logging is debug-only and isolated from state success; no credential, metadata, or PCM is used.
+     */
+    private fun finishDebugSttMetrics(
+        tracker: DebugSttMetricsTracker,
+        outcome: DebugSttOutcome,
+    ) {
+        val metrics = tracker.snapshot(outcome)
+        publishDebugSttMetrics(metrics)
+        logDebugSttMetrics(metrics)
+    }
+
+    /**
+     * Converts the existing cloud failure reason into the DEBUG evaluation outcome vocabulary.
+     *
+     * @param error fixed non-secret provider-neutral cloud failure.
+     * @return matching metrics outcome without retaining the exception or provider detail.
+     *
+     * This pure mapping is safe on any dispatcher, performs no I/O, and has no coroutine or
+     * cancellation behavior. Unknown failures remain explicitly Unknown rather than guessed.
+     */
+    private fun mapDebugSttOutcome(error: CloudSttException): DebugSttOutcome =
+        when (error.reason) {
+            CloudSttFailureReason.NotConfigured -> DebugSttOutcome.NotConfigured
+            CloudSttFailureReason.Unauthenticated -> DebugSttOutcome.Unauthenticated
+            CloudSttFailureReason.PermissionDenied -> DebugSttOutcome.PermissionDenied
+            CloudSttFailureReason.QuotaExceeded -> DebugSttOutcome.QuotaExceeded
+            CloudSttFailureReason.Unavailable -> DebugSttOutcome.Unavailable
+            CloudSttFailureReason.Timeout -> DebugSttOutcome.Timeout
+            CloudSttFailureReason.Unknown -> DebugSttOutcome.Unknown
+        }
+
+    /**
+     * Emits exactly one CSV-friendly DEBUG logcat payload for a completed comparison run.
+     *
+     * @param metrics finalized non-secret evaluation snapshot.
+     * @return This function has no return value.
+     *
+     * The call is synchronous and starts no coroutine. Release builds skip it. Android logging
+     * failures are isolated so diagnostics cannot alter recovery; transcript is intentionally
+     * included for tester scoring, while credentials, metadata, headers, and raw audio are absent.
+     */
+    private fun logDebugSttMetrics(metrics: DebugSttMetrics) {
+        if (!BuildConfig.DEBUG) return
+        try {
+            Log.i(DEBUG_STT_METRICS_TAG, metrics.toCsvLine())
+        } catch (_: RuntimeException) {
+            // Evaluation logging must never turn an otherwise valid run into a UI failure.
         }
     }
 
@@ -1084,7 +1267,7 @@ class SttViewModel(
         /** Bounded debug capture followed by raw PCM playback. */
         DebugLoopback,
 
-        /** DEBUG-only MicRecorder → CloudSttClient round-trip verification. */
+        /** DEBUG-only MicRecorder → selected SttClient comparison run. */
         CloudSmokeTest,
     }
 
@@ -1098,7 +1281,10 @@ class SttViewModel(
      * @param apiKeyProvider lazy provider for the debug-only API-key presence check and cloud
      * authentication.
      * @param productionSttClient provider-neutral recognizer used by production Start/Stop.
-     * @param debugCloudSttClient provider-neutral streaming client used only by DEBUG smoke UI.
+     * @param debugV1SttClient existing V1 baseline used only by DEBUG smoke UI.
+     * @param debugChirp2SttClient V2 Chirp 2 client used only by DEBUG smoke UI.
+     * @param debugChirp3SttClient V2 Chirp 3 client used only by DEBUG smoke UI.
+     * @param monotonicClock debug latency clock; defaults to the platform monotonic source.
      *
      * Factory creation is synchronous on Android's main thread. It performs no audio I/O and owns no
      * cancellable resource; unsupported ViewModel types fail with [IllegalArgumentException].
@@ -1109,7 +1295,10 @@ class SttViewModel(
         private val accessTokenProvider: AccessTokenProvider,
         private val apiKeyProvider: ApiKeyProvider,
         private val productionSttClient: SttClient,
-        private val debugCloudSttClient: SttClient,
+        private val debugV1SttClient: SttClient,
+        private val debugChirp2SttClient: SttClient,
+        private val debugChirp3SttClient: SttClient,
+        private val monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
     ) : ViewModelProvider.Factory {
 
         /**
@@ -1133,25 +1322,41 @@ class SttViewModel(
                 accessTokenProvider,
                 apiKeyProvider,
                 productionSttClient,
-                debugCloudSttClient,
+                debugV1SttClient,
+                debugChirp2SttClient,
+                debugChirp3SttClient,
+                monotonicClock,
             ) as T
         }
     }
 
     /**
-     * Releases production and DEBUG cloud clients when Android disposes this ViewModel.
+     * Releases production and all DEBUG cloud clients when Android disposes this ViewModel.
      *
      * @return This lifecycle callback has no return value.
      *
      * Android invokes this on the main thread after lifecycle-owned coroutines are cancelled. The
-     * generic AutoCloseable checks keep UI independent of CloudSttClient/gRPC types. When both roles
-     * share one client instance it is closed exactly once; close is non-suspending, cancels active
+     * generic AutoCloseable checks keep UI independent of Google/gRPC types. Identity checks close
+     * shared V1 only once and each distinct V2 channel once; close is non-suspending, cancels active
      * RPCs, and throws no expected project-specific failure.
      */
     override fun onCleared() {
         (productionSttClient as? AutoCloseable)?.close()
-        if (debugCloudSttClient !== productionSttClient) {
-            (debugCloudSttClient as? AutoCloseable)?.close()
+        if (debugV1SttClient !== productionSttClient) {
+            (debugV1SttClient as? AutoCloseable)?.close()
+        }
+        if (
+            debugChirp2SttClient !== productionSttClient &&
+                debugChirp2SttClient !== debugV1SttClient
+        ) {
+            (debugChirp2SttClient as? AutoCloseable)?.close()
+        }
+        if (
+            debugChirp3SttClient !== productionSttClient &&
+                debugChirp3SttClient !== debugV1SttClient &&
+                debugChirp3SttClient !== debugChirp2SttClient
+        ) {
+            (debugChirp3SttClient as? AutoCloseable)?.close()
         }
         super.onCleared()
     }
@@ -1172,6 +1377,8 @@ class SttViewModel(
         const val CLOUD_NOT_CONFIGURED_ERROR =
             "Cloud speech is not configured. Add an approved credential and retry."
         const val PRODUCTION_AUDIO_BUFFER_CAPACITY = 4
+        const val DEBUG_CLOUD_AUDIO_BUFFER_CAPACITY = 4
+        const val DEBUG_STT_METRICS_TAG = "SttMetricsCsv"
 
         /** Maximum wait for the first non-blank production recognition result. */
         const val FIRST_RESPONSE_TIMEOUT_MS = 15_000L

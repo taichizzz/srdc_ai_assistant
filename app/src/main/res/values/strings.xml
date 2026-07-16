@@ -21,7 +21,18 @@
     <string name="cloud_configuration_check">Check cloud configuration</string>
     <string name="cloud_configuration_checking">Checking configuration…</string>
     <string name="cloud_stt_smoke_title">DEBUG Cloud STT test</string>
-    <string name="cloud_stt_smoke_explanation">Streams the same 16 kHz microphone PCM to Google and displays raw interim/final results. It does not change the production transcript.</string>
+    <string name="cloud_stt_smoke_explanation">Streams the same 16 kHz microphone PCM through the selected evaluation engine. Production Start remains V1.</string>
+    <string name="cloud_stt_engine_selector">Evaluation engine</string>
+    <string name="cloud_stt_metrics_title">Testing metrics — automatic criteria</string>
+    <string name="cloud_stt_metrics_engine">Engine/model: %1$s / %2$s</string>
+    <string name="cloud_stt_metrics_first_token">First Token Latency: %1$s ms</string>
+    <string name="cloud_stt_metrics_final">Final Sentence Latency: %1$s ms</string>
+    <string name="cloud_stt_metrics_total">Total latency: %1$s ms</string>
+    <string name="cloud_stt_metrics_outcome">API outcome: %1$s</string>
+    <string name="cloud_stt_metrics_unavailable">N/A</string>
+    <string name="cloud_stt_metrics_auto_rubric">Rubric: First token 5=&lt;150 ms, 3=150–350 ms, 1=&gt;500 ms. Final 5=&lt;350 ms, 3=350–750 ms, 1=&gt;1200 ms. Use outcome + total latency for API connection/success scoring.</string>
+    <string name="cloud_stt_metrics_manual_note">Manual/external: score code-switching, noise/WER, throttled-network resilience, fallback latency, hotword support, and billing outside the app using this transcript and timing.</string>
+    <string name="cloud_stt_metrics_log_note">One CSV row per run is logged with tag SttMetricsCsv.</string>
     <string name="cloud_stt_smoke_partial_label">Cloud partial result</string>
     <string name="cloud_stt_smoke_final_label">Cloud final result</string>
     <string name="cloud_stt_smoke_no_partial">No cloud partial result</string>

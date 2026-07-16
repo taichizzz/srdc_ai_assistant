@@ -17,6 +17,13 @@ val localProperties =
 val debugGcpSttAccessToken = localProperties.getProperty("GCP_STT_ACCESS_TOKEN").orEmpty()
 val debugGcpSttApiKey = localProperties.getProperty("GCP_STT_API_KEY").orEmpty()
 val debugGcpProjectId = localProperties.getProperty("GCP_STT_PROJECT_ID").orEmpty()
+// Keep the region developer-selectable because Chirp availability changes independently of code.
+val debugGcpSttLocation =
+    localProperties
+        .getProperty("GCP_STT_LOCATION")
+        .orEmpty()
+        .trim()
+        .ifEmpty { "asia-southeast1" }
 
 /**
  * Escapes a local string as a Java source literal for a generated BuildConfig field.
@@ -49,6 +56,7 @@ android {
         buildConfigField("String", "GCP_STT_ACCESS_TOKEN", "\"\"")
         buildConfigField("String", "GCP_STT_API_KEY", "\"\"")
         buildConfigField("String", "GCP_STT_PROJECT_ID", "\"\"")
+        buildConfigField("String", "GCP_STT_LOCATION", "\"\"")
     }
 
     buildTypes {
@@ -67,6 +75,11 @@ android {
                 "String",
                 "GCP_STT_PROJECT_ID",
                 debugGcpProjectId.asBuildConfigStringLiteral(),
+            )
+            buildConfigField(
+                "String",
+                "GCP_STT_LOCATION",
+                debugGcpSttLocation.asBuildConfigStringLiteral(),
             )
         }
         release {
@@ -120,6 +133,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.api.grpc:grpc-google-cloud-speech-v1:4.74.0")
+    implementation("com.google.api.grpc:grpc-google-cloud-speech-v2:4.74.0")
     implementation("com.google.protobuf:protobuf-java:3.25.8")
     implementation("io.grpc:grpc-okhttp")
 
