@@ -15,6 +15,61 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — M1.1 Phase 5 amendment: API-key authentication
+
+### Added
+
+- Added provider-neutral `config/ApiKeyProvider.kt` and
+  `config/BuildConfigApiKeyProvider.kt` so CloudSttClient can inspect an optional
+  plain API key without exposing BuildConfig or gRPC types to UI/contracts.
+- Added debug-only `GCP_STT_API_KEY` documentation to
+  `local.properties.example`, including Speech-to-Text API restriction, optional
+  Android package/signing SHA-1 restriction, and service-account JSON prohibition.
+- Added deterministic provider tests plus in-process gRPC metadata tests proving
+  API-key-only, bearer-only, API-key-precedence, and neither-configured behavior.
+
+### Changed
+
+- Changed `app/build.gradle.kts` to read `GCP_STT_API_KEY` from gitignored
+  `local.properties`, inject it only for debug builds, and force the default/release
+  BuildConfig value to an empty string.
+- Changed `speech/CloudSttClient.kt` to select credentials at stream start. A
+  non-blank API key sends only `x-goog-api-key`; otherwise the existing OAuth path
+  sends only `authorization: Bearer` plus optional `x-goog-user-project`.
+- Generalized recoverable missing/rejected-credential messages so they do not imply
+  one authentication mechanism and never include credential/provider detail.
+- Updated `docs/demos/M1.1.md` with API-key setup, precedence, restriction, release,
+  deterministic-test, failure-recovery, and live smoke-test instructions.
+
+### Notes
+
+- Added API-key authentication alongside bearer authentication because the company
+  supplies a plain key for this development path; the SttClient/SttResult contracts,
+  production Start wiring, reducer, UI, and other modules remain unchanged.
+- Chose API-key precedence so exactly one credential is deterministic when both
+  local values are accidentally present. The bearer provider is not invoked and
+  `authorization`/`x-goog-user-project` are omitted in API-key mode.
+- Attached `x-goog-api-key` through the existing per-RPC CallCredentials boundary
+  because all metadata stays inside `speech/` and the reusable production channel
+  remains TLS-protected.
+- Kept ApiKeyProvider suspend and provider-neutral so a future approved secret source
+  can retrieve it cancellably without changing CloudSttClient or the UI boundary.
+- Treated the API key as a long-lived secret: it is debug-only, never logged or
+  included in errors, must be restricted to Speech-to-Text and preferably the app
+  identity, and must never be committed or reused as service-account material.
+- Confirmed no service-account JSON exists in the repository/workspace and current
+  `local.properties` contains only `sdk.dir`; no real API key was inspected or added.
+- Kept `.gitignore` unchanged with `local.properties` and all JSON files excluded.
+- The Phase 4 **Check cloud configuration** action remains an OAuth-token presence
+  check; API-key acceptance is verified through the Phase 5 DEBUG cloud smoke test.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`;
+  all 26 unit tests passed, debug/release APKs assembled, and lint reported no
+  blocking issue. Six CloudSttClient tests include the three required credential
+  cases plus existing request/mapping/error/cancellation coverage.
+- Confirmed generated release BuildConfig contains an empty `GCP_STT_API_KEY`, and
+  a repository/workspace credential scan found no API key, OAuth token, private key,
+  credential JSON, or credential logging statement.
+
 ## [2026-07-16] — M1.1 Phase 5: Google Cloud streaming STT client
 
 ### Added

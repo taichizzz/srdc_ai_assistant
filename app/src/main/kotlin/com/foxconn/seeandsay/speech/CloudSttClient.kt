@@ -1,6 +1,8 @@
 package com.foxconn.seeandsay.speech
 
 import com.foxconn.seeandsay.config.AccessTokenProvider
+import com.foxconn.seeandsay.config.ApiKeyProvider
+import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.GcpSttConfig
 import com.google.cloud.speech.v1.RecognitionConfig
@@ -35,9 +37,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Streams PCM audio to Google Cloud Speech-to-Text V1 over one reusable TLS gRPC channel.
  *
  * @param accessTokenProvider suspend provider for a current short-lived OAuth bearer token.
+ * @param apiKeyProvider suspend provider for an optional plain API key, which takes precedence.
  * @param channel reusable managed channel; production uses one OkHttp TLS channel, while tests inject
  * an in-process channel through this internal constructor.
- * @param quotaProjectId optional non-secret project attached as `x-goog-user-project` per RPC.
+ * @param quotaProjectId optional non-secret project attached only to OAuth bearer RPCs.
  *
  * Each [stream] collection creates exactly one bidirectional RPC while reusing [channel]. gRPC and
  * protobuf callbacks/types remain inside this class and are converted to provider-neutral Flow
@@ -47,6 +50,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class CloudSttClient internal constructor(
     private val accessTokenProvider: AccessTokenProvider,
+    private val apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
     private val channel: ManagedChannel,
     private val quotaProjectId: String?,
 ) : SttClient,
@@ -58,13 +62,18 @@ class CloudSttClient internal constructor(
      * Creates the production client with one TLS OkHttp channel to Google's speech endpoint.
      *
      * @param accessTokenProvider suspend provider for a short-lived OAuth bearer token.
+     * @param apiKeyProvider suspend provider for an optional debug-injected plain API key.
      *
-     * Construction allocates the reusable channel but performs no RPC or token lookup. Channel setup
-     * is thread-safe and non-suspending; DNS/TLS work begins only when a Flow is collected. Setup may
-     * throw a platform/runtime initialization failure. [close] owns channel cancellation/cleanup.
+     * Construction allocates the reusable channel but performs no RPC or credential lookup. Channel
+     * setup is thread-safe and non-suspending; DNS/TLS work begins only when a Flow is collected.
+     * Setup may throw a platform/runtime initialization failure. [close] owns channel cleanup.
      */
-    constructor(accessTokenProvider: AccessTokenProvider) : this(
+    constructor(
+        accessTokenProvider: AccessTokenProvider,
+        apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
+    ) : this(
         accessTokenProvider = accessTokenProvider,
+        apiKeyProvider = apiKeyProvider,
         channel = createProductionChannel(),
         quotaProjectId = GcpSttConfig.projectId,
     )
@@ -92,27 +101,48 @@ class CloudSttClient internal constructor(
                 return@callbackFlow
             }
 
-            val token =
+            val apiKey =
                 try {
-                    accessTokenProvider.currentToken()
-                } catch (error: CloudSpeechNotConfiguredException) {
-                    close(
-                        CloudSttException(
-                            CloudSttFailureReason.NotConfigured,
-                            CLOUD_NOT_CONFIGURED_MESSAGE,
-                        ),
-                    )
-                    return@callbackFlow
+                    apiKeyProvider.currentApiKey()?.trim()?.takeIf(String::isNotEmpty)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
                     close(
                         CloudSttException(
                             CloudSttFailureReason.Unauthenticated,
-                            TOKEN_PROVIDER_MESSAGE,
+                            CREDENTIAL_PROVIDER_MESSAGE,
                         ),
                     )
                     return@callbackFlow
+                }
+
+            val credential =
+                if (apiKey != null) {
+                    StreamCredential.ApiKey(apiKey)
+                } else {
+                    val token =
+                        try {
+                            accessTokenProvider.currentToken()
+                        } catch (error: CloudSpeechNotConfiguredException) {
+                            close(
+                                CloudSttException(
+                                    CloudSttFailureReason.NotConfigured,
+                                    CLOUD_NOT_CONFIGURED_MESSAGE,
+                                ),
+                            )
+                            return@callbackFlow
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Throwable) {
+                            close(
+                                CloudSttException(
+                                    CloudSttFailureReason.Unauthenticated,
+                                    CREDENTIAL_PROVIDER_MESSAGE,
+                                ),
+                            )
+                            return@callbackFlow
+                        }
+                    StreamCredential.BearerToken(token, quotaProjectId)
                 }
 
             val readinessSignals = Channel<Unit>(Channel.CONFLATED)
@@ -210,7 +240,7 @@ class CloudSttClient internal constructor(
                 try {
                     SpeechGrpc
                         .newStub(this@CloudSttClient.channel)
-                        .withCallCredentials(BearerTokenCallCredentials(token, quotaProjectId))
+                        .withCallCredentials(SpeechCallCredentials(credential))
                         // Google enforces an approximately five-minute/305-second stream limit.
                         // Setting the same deadline makes the boundary explicit for Phase 6/7.
                         .withDeadlineAfter(STREAMING_DEADLINE_SECONDS, TimeUnit.SECONDS)
@@ -302,31 +332,60 @@ class CloudSttClient internal constructor(
     }
 
     /**
-     * Attaches the already acquired bearer token and optional quota project to one RPC.
+     * Represents exactly one selected authentication mechanism for a streaming RPC.
      *
-     * @param token short-lived OAuth value retained only by this call-credentials instance.
-     * @param quotaProjectId optional non-secret project for quota attribution.
+     * Values contain no gRPC type and never cross the CloudSttClient boundary. Instances perform no
+     * I/O, have no coroutine or cancellation behavior, and fail only on normal allocation errors.
+     */
+    private sealed interface StreamCredential {
+
+        /**
+         * Holds a plain API key that will be sent only as `x-goog-api-key`.
+         *
+         * @property value non-blank API key retained in memory for one RPC.
+         *
+         * This value performs no I/O and has no threading, failure, or cancellation behavior.
+         */
+        data class ApiKey(val value: String) : StreamCredential
+
+        /**
+         * Holds a bearer token and optional non-secret quota project for one RPC.
+         *
+         * @property value short-lived OAuth token retained in memory for one RPC.
+         * @property quotaProjectId optional project for the `x-goog-user-project` header.
+         *
+         * This value performs no I/O and has no threading, failure, or cancellation behavior.
+         */
+        data class BearerToken(
+            val value: String,
+            val quotaProjectId: String?,
+        ) : StreamCredential
+    }
+
+    /**
+     * Attaches exactly one already selected credential mode to one RPC.
+     *
+     * @param credential API key or OAuth bearer selection made before RPC construction.
      *
      * gRPC invokes [applyRequestMetadata] with an executor. The implementation never logs, persists,
      * or exposes headers; executor rejection becomes an unauthenticated call failure. There is no
      * coroutine or cancellation resource inside this synchronous credentials adapter.
      */
-    private class BearerTokenCallCredentials(
-        private val token: String,
-        private val quotaProjectId: String?,
+    private class SpeechCallCredentials(
+        private val credential: StreamCredential,
     ) : CallCredentials() {
 
         /**
-         * Applies fixed ASCII authentication metadata on gRPC's supplied executor.
+         * Applies one mutually exclusive ASCII credential on gRPC's supplied executor.
          *
-         * @param requestInfo non-secret call information unused by this static token adapter.
+         * @param requestInfo non-secret call information unused by this credential adapter.
          * @param appExecutor executor required by the gRPC credentials contract.
          * @param applier callback that receives headers or a fixed authentication failure.
          * @return This callback has no return value.
          *
          * The method performs no blocking work. It schedules one short task and owns no coroutine;
          * gRPC cancels the call if metadata application fails. Neither success nor failure logs the
-         * token or Authorization header.
+         * API key, token, or credential header.
          */
         override fun applyRequestMetadata(
             requestInfo: RequestInfo,
@@ -336,11 +395,21 @@ class CloudSttClient internal constructor(
             try {
                 appExecutor.execute {
                     val headers = Metadata()
-                    headers.put(AUTHORIZATION_METADATA_KEY, "Bearer $token")
-                    quotaProjectId
-                        ?.trim()
-                        ?.takeIf(String::isNotEmpty)
-                        ?.let { headers.put(QUOTA_PROJECT_METADATA_KEY, it) }
+                    when (val selectedCredential = credential) {
+                        is StreamCredential.ApiKey ->
+                            headers.put(API_KEY_METADATA_KEY, selectedCredential.value)
+
+                        is StreamCredential.BearerToken -> {
+                            headers.put(
+                                AUTHORIZATION_METADATA_KEY,
+                                "Bearer ${selectedCredential.value}",
+                            )
+                            selectedCredential.quotaProjectId
+                                ?.trim()
+                                ?.takeIf(String::isNotEmpty)
+                                ?.let { headers.put(QUOTA_PROJECT_METADATA_KEY, it) }
+                        }
+                    }
                     applier.apply(headers)
                 }
             } catch (error: RuntimeException) {
@@ -359,8 +428,8 @@ class CloudSttClient internal constructor(
         private const val RESULT_BUFFER_CAPACITY = 16
 
         private const val CLOUD_NOT_CONFIGURED_MESSAGE =
-            "Cloud speech is not configured. Add a short-lived OAuth token and retry."
-        private const val TOKEN_PROVIDER_MESSAGE =
+            "Cloud speech is not configured. Add an approved credential and retry."
+        private const val CREDENTIAL_PROVIDER_MESSAGE =
             "Cloud speech authentication is unavailable. Refresh configuration and retry."
         private const val CLIENT_CLOSED_MESSAGE =
             "Cloud speech is unavailable because the client has been closed."
@@ -380,6 +449,8 @@ class CloudSttClient internal constructor(
 
         private val AUTHORIZATION_METADATA_KEY: Metadata.Key<String> =
             Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)
+        private val API_KEY_METADATA_KEY: Metadata.Key<String> =
+            Metadata.Key.of("x-goog-api-key", Metadata.ASCII_STRING_MARSHALLER)
         private val QUOTA_PROJECT_METADATA_KEY: Metadata.Key<String> =
             Metadata.Key.of("x-goog-user-project", Metadata.ASCII_STRING_MARSHALLER)
 
@@ -496,7 +567,7 @@ class CloudSttClient internal constructor(
                 Status.Code.UNAUTHENTICATED ->
                     CloudSttException(
                         CloudSttFailureReason.Unauthenticated,
-                        "Cloud speech token is invalid or expired. Refresh it and retry.",
+                        "Cloud speech credential was rejected. Check or refresh it and retry.",
                     )
 
                 Status.Code.PERMISSION_DENIED ->

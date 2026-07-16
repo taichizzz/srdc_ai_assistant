@@ -12,3 +12,10 @@ GCP_STT_PROJECT_ID=
 # token, private key, or other long-lived credential here. Production must use an approved
 # organization token broker instead of packaging a developer token.
 GCP_STT_ACCESS_TOKEN=
+
+# DEBUG BUILDS ONLY: plain Google Cloud API key string (commonly starts with AIza...).
+# If non-empty, this takes precedence over GCP_STT_ACCESS_TOKEN for the Cloud STT call. Restrict the
+# key in Google Cloud Console to the Speech-to-Text API and, where company policy supports it, to
+# package com.foxconn.seeandsay plus the signing certificate SHA-1. Never paste a service-account
+# JSON, private key, or other credential file here, and never commit the real value to VCS.
+GCP_STT_API_KEY=

@@ -15,6 +15,7 @@ val localProperties =
     }
 
 val debugGcpSttAccessToken = localProperties.getProperty("GCP_STT_ACCESS_TOKEN").orEmpty()
+val debugGcpSttApiKey = localProperties.getProperty("GCP_STT_API_KEY").orEmpty()
 val debugGcpProjectId = localProperties.getProperty("GCP_STT_PROJECT_ID").orEmpty()
 
 /**
@@ -44,8 +45,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Release and unqualified variants are safe by default. Only debug overrides these values
-        // from the gitignored local file below, so a developer bearer token cannot enter a release.
+        // from the gitignored local file below, so developer credentials cannot enter a release.
         buildConfigField("String", "GCP_STT_ACCESS_TOKEN", "\"\"")
+        buildConfigField("String", "GCP_STT_API_KEY", "\"\"")
         buildConfigField("String", "GCP_STT_PROJECT_ID", "\"\"")
     }
 
@@ -55,6 +57,11 @@ android {
                 "String",
                 "GCP_STT_ACCESS_TOKEN",
                 debugGcpSttAccessToken.asBuildConfigStringLiteral(),
+            )
+            buildConfigField(
+                "String",
+                "GCP_STT_API_KEY",
+                debugGcpSttApiKey.asBuildConfigStringLiteral(),
             )
             buildConfigField(
                 "String",

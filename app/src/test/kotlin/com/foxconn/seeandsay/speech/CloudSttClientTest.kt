@@ -1,6 +1,7 @@
 package com.foxconn.seeandsay.speech
 
 import com.foxconn.seeandsay.config.AccessTokenProvider
+import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.FakeAccessTokenProvider
 import com.google.cloud.speech.v1.SpeechGrpc
@@ -9,7 +10,11 @@ import com.google.cloud.speech.v1.StreamingRecognitionResult
 import com.google.cloud.speech.v1.StreamingRecognizeRequest
 import com.google.cloud.speech.v1.StreamingRecognizeResponse
 import io.grpc.ManagedChannel
+import io.grpc.Metadata
 import io.grpc.Server
+import io.grpc.ServerCall
+import io.grpc.ServerCallHandler
+import io.grpc.ServerInterceptor
 import io.grpc.Status
 import io.grpc.inprocess.InProcessChannelBuilder
 import io.grpc.inprocess.InProcessServerBuilder
@@ -95,6 +100,57 @@ class CloudSttClientTest {
         }
 
     /**
+     * Verifies a configured API key takes precedence and is the only credential sent.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] performs one in-process RPC and captures server metadata without external I/O. It
+     * fails if the key is absent, bearer/quota metadata is also sent, or the token provider is read.
+     * The finite fake stream completes normally and requires no explicit cancellation.
+     */
+    @Test
+    fun apiKeyTakesPrecedenceAndExcludesBearerMetadata() =
+        runTest {
+            val tokenProvider = FakeAccessTokenProvider(token = "unused-test-bearer")
+            GrpcFixture(
+                service = SuccessfulSpeechService(),
+                tokenProvider = tokenProvider,
+                apiKeyProvider = ApiKeyProvider { "test-api-key" },
+            ).use { fixture ->
+                fixture.client.stream(flowOf(byteArrayOf(1, 2))).toList()
+
+                assertEquals("test-api-key", fixture.metadataCapture.apiKey)
+                assertNull(fixture.metadataCapture.authorization)
+                assertNull(fixture.metadataCapture.quotaProjectId)
+                assertEquals(0, tokenProvider.requestCount)
+            }
+        }
+
+    /**
+     * Verifies bearer authentication remains unchanged when no API key is configured.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] performs one in-process RPC and inspects only non-production fake metadata. It does
+     * no network or platform I/O and fails if API-key metadata is present or bearer/quota metadata
+     * is missing. The finite fake stream completes without manual cancellation.
+     */
+    @Test
+    fun bearerIsUsedWhenApiKeyIsAbsent() =
+        runTest {
+            GrpcFixture(
+                service = SuccessfulSpeechService(),
+                tokenProvider = FakeAccessTokenProvider(token = "test-bearer"),
+            ).use { fixture ->
+                fixture.client.stream(flowOf(byteArrayOf(1, 2))).toList()
+
+                assertNull(fixture.metadataCapture.apiKey)
+                assertEquals("Bearer test-bearer", fixture.metadataCapture.authorization)
+                assertEquals("test-quota-project", fixture.metadataCapture.quotaProjectId)
+            }
+        }
+
+    /**
      * Verifies all required gRPC status codes become fixed recoverable CloudSttException reasons.
      *
      * @return This test has no return value.
@@ -133,7 +189,7 @@ class CloudSttClientTest {
      * network work may begin; the resulting provider-neutral error must remain recoverable.
      */
     @Test
-    fun missingTokenFailsRecoverablyBeforeAudioCollection() =
+    fun missingCredentialsFailRecoverablyBeforeAudioCollection() =
         runTest {
             val service = SuccessfulSpeechService()
             var audioWasCollected = false
@@ -428,6 +484,7 @@ class CloudSttClientTest {
      *
      * @param service fake Speech service implementation installed in the in-process server.
      * @param tokenProvider provider used by the client; defaults to a non-secret fake value.
+     * @param apiKeyProvider optional API-key source; defaults to no configured key.
      *
      * Construction starts only in-memory gRPC resources with direct executors and cannot access DNS,
      * TLS, Google, or Android. [close] promptly cancels active calls and shuts down both resources;
@@ -436,12 +493,17 @@ class CloudSttClientTest {
     private class GrpcFixture(
         service: SpeechGrpc.SpeechImplBase,
         tokenProvider: AccessTokenProvider = FakeAccessTokenProvider(),
+        apiKeyProvider: ApiKeyProvider = ApiKeyProvider { null },
     ) : AutoCloseable {
         private val serverName = InProcessServerBuilder.generateName()
+
+        /** Credential metadata captured from this fixture's most recent in-process RPC. */
+        val metadataCapture = CredentialMetadataInterceptor()
         private val server: Server =
             InProcessServerBuilder
                 .forName(serverName)
                 .directExecutor()
+                .intercept(metadataCapture)
                 .addService(service)
                 .build()
                 .start()
@@ -454,6 +516,7 @@ class CloudSttClientTest {
         val client =
             CloudSttClient(
                 accessTokenProvider = tokenProvider,
+                apiKeyProvider = apiKeyProvider,
                 channel = channel,
                 quotaProjectId = "test-quota-project",
             )
@@ -473,7 +536,58 @@ class CloudSttClientTest {
         }
     }
 
+    /**
+     * Captures only the three credential-related metadata values from an in-process test RPC.
+     *
+     * gRPC invokes [interceptCall] on the fixture's direct executor before the fake service. The
+     * interceptor performs no blocking, network I/O, logging, or coroutine work; captured values are
+     * non-production test strings and are overwritten for each call.
+     */
+    private class CredentialMetadataInterceptor : ServerInterceptor {
+        /** Most recently captured fake `x-goog-api-key` value, or `null` when absent. */
+        @Volatile var apiKey: String? = null
+            private set
+
+        /** Most recently captured fake Authorization value, or `null` when absent. */
+        @Volatile var authorization: String? = null
+            private set
+
+        /** Most recently captured fake quota-project value, or `null` when absent. */
+        @Volatile var quotaProjectId: String? = null
+            private set
+
+        /**
+         * Captures mutually exclusive credential headers and continues the in-process server call.
+         *
+         * @param call active in-process server call.
+         * @param headers request metadata supplied by CloudSttClient's CallCredentials.
+         * @param next next handler in the fake server chain.
+         * @return listener created by [next] for the request stream.
+         *
+         * The callback runs synchronously on the direct gRPC executor, performs no suspension or
+         * external I/O, and propagates downstream setup failures unchanged. Cancellation remains
+         * owned by the normal in-process call lifecycle.
+         */
+        override fun <ReqT : Any?, RespT : Any?> interceptCall(
+            call: ServerCall<ReqT, RespT>,
+            headers: Metadata,
+            next: ServerCallHandler<ReqT, RespT>,
+        ): ServerCall.Listener<ReqT> {
+            apiKey = headers.get(API_KEY_METADATA_KEY)
+            authorization = headers.get(AUTHORIZATION_METADATA_KEY)
+            quotaProjectId = headers.get(QUOTA_PROJECT_METADATA_KEY)
+            return next.startCall(call, headers)
+        }
+    }
+
     companion object {
+        private val API_KEY_METADATA_KEY: Metadata.Key<String> =
+            Metadata.Key.of("x-goog-api-key", Metadata.ASCII_STRING_MARSHALLER)
+        private val AUTHORIZATION_METADATA_KEY: Metadata.Key<String> =
+            Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)
+        private val QUOTA_PROJECT_METADATA_KEY: Metadata.Key<String> =
+            Metadata.Key.of("x-goog-user-project", Metadata.ASCII_STRING_MARSHALLER)
+
         /**
          * Creates one fabricated response containing one alternative/result pair.
          *

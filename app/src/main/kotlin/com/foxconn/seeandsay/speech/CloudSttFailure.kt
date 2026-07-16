@@ -7,10 +7,10 @@ package com.foxconn.seeandsay.speech
  * failure mode, and are safe to pass across coroutine contexts without cancellation behavior.
  */
 enum class CloudSttFailureReason {
-    /** No short-lived OAuth token is available from local configuration or a future broker. */
+    /** Neither a plain API key nor a short-lived OAuth token is available. */
     NotConfigured,
 
-    /** Google rejected the bearer token because it is invalid or expired. */
+    /** Google rejected the selected API key or bearer token. */
     Unauthenticated,
 
     /** Google denied API/project access, commonly because API enablement or quota project is absent. */
