@@ -56,7 +56,8 @@ object GcpSttV2Config {
      * Builds the regional Speech-to-Text service hostname without provider SDK types.
      *
      * @param location non-blank Google Cloud V2 region or multi-region identifier.
-     * @return regional TLS host in `{location}-speech.googleapis.com` form.
+     * @return global `speech.googleapis.com` host for `global`, otherwise the regional TLS host in
+     * `{location}-speech.googleapis.com` form.
      * @throws IllegalArgumentException when [location] is blank.
      *
      * This pure function is safe on any dispatcher, performs no I/O, and has no coroutine or
@@ -64,7 +65,14 @@ object GcpSttV2Config {
      */
     fun serviceHost(location: String): String {
         require(location.isNotBlank()) { "Google STT V2 location must not be blank." }
-        return "${location.trim()}-speech.googleapis.com"
+        val normalized = location.trim()
+        // `global` is a resource location but not a DNS prefix; Google exposes it on the canonical
+        // service endpoint while regional and multi-regional locations use prefixed endpoints.
+        return if (normalized == GLOBAL_LOCATION) {
+            GLOBAL_SERVICE_HOST
+        } else {
+            "$normalized-speech.googleapis.com"
+        }
     }
 
     /**
@@ -101,4 +109,10 @@ object GcpSttV2Config {
         }
         return normalized
     }
+
+    /** Resource location whose service endpoint has no location prefix. */
+    private const val GLOBAL_LOCATION: String = "global"
+
+    /** Canonical Google Speech-to-Text endpoint used by the global resource location. */
+    private const val GLOBAL_SERVICE_HOST: String = "speech.googleapis.com"
 }

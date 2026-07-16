@@ -15,6 +15,33 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — V2 global endpoint correction
+
+### Fixed
+
+- Fixed `config/GcpSttV2Config.kt` so `GCP_STT_LOCATION=global` opens Google's
+  canonical `speech.googleapis.com` endpoint instead of the invalid
+  `global-speech.googleapis.com` hostname. The recognizer resource correctly remains
+  `projects/{project}/locations/global/recognizers/_`.
+- Added `config/GcpSttV2ConfigTest.kt` coverage for global, regional, multi-regional,
+  recognizer-path, and blank-location behavior.
+
+### Changed
+
+- Updated `docs/demos/M1.1.md` to distinguish global endpoint routing from regional
+  and multi-regional routing.
+
+### Notes
+
+- Special-cased only endpoint construction because `global` is a valid resource
+  location but not a DNS prefix; all other location values retain Google's
+  `{location}-speech.googleapis.com` convention.
+- Authentication remains a separate concern: a standard API key supplies project/
+  quota identity but cannot satisfy V2's OAuth scope and
+  `speech.recognizers.recognize` IAM requirement.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`:
+  all 45 unit tests passed, lint completed, and both APK variants assembled.
+
 ## [2026-07-16] — DEBUG STT V1 / Chirp 2 / Chirp 3 evaluation
 
 ### Added
