@@ -2,6 +2,7 @@ package com.foxconn.seeandsay.speech
 
 import com.foxconn.seeandsay.config.AccessTokenProvider
 import com.foxconn.seeandsay.config.ApiKeyProvider
+import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.FakeAccessTokenProvider
 import com.foxconn.seeandsay.config.GcpSttV2Config
 import com.google.cloud.speech.v2.ExplicitDecodingConfig
@@ -103,21 +104,39 @@ class CloudSttV2ClientTest {
         }
 
     /**
-     * Verifies V2 preserves API-key precedence and the bearer fallback without mixed credentials.
+     * Verifies V2 prefers its IAM bearer token and retains API-key fallback without mixing them.
      *
      * @return This test has no return value.
      *
-     * [runTest] performs two finite in-process RPCs and captures only fake metadata. It fails if an
-     * API-key call also sends bearer/quota headers or reads the token provider, or if the no-key
-     * call omits bearer/quota metadata. No real credential, network, log, or delay is involved.
+     * [runTest] performs two finite in-process RPCs and captures only fake metadata. It fails if a
+     * both-configured call sends the API key or reads its provider, or if a missing-token call omits
+     * the API-key fallback. No real credential, network, log, or delay is involved.
      */
     @Test
     fun selectsExactlyOneCredentialMode() =
         runTest {
-            val unusedToken = FakeAccessTokenProvider(token = "unused-v2-test-bearer")
+            var apiKeyRead = false
             GrpcFixture(
                 service = SuccessfulSpeechService(),
-                tokenProvider = unusedToken,
+                tokenProvider = FakeAccessTokenProvider(token = "v2-test-bearer"),
+                apiKeyProvider =
+                    ApiKeyProvider {
+                        apiKeyRead = true
+                        "unused-v2-test-api-key"
+                    },
+            ).use { fixture ->
+                fixture.client.stream(flowOf(byteArrayOf(1))).toList()
+
+                assertNull(fixture.metadataCapture.apiKey)
+                assertEquals("Bearer v2-test-bearer", fixture.metadataCapture.authorization)
+                assertEquals(TEST_PROJECT, fixture.metadataCapture.quotaProjectId)
+                assertFalse(apiKeyRead)
+            }
+
+            GrpcFixture(
+                service = SuccessfulSpeechService(),
+                tokenProvider =
+                    FakeAccessTokenProvider(failure = CloudSpeechNotConfiguredException()),
                 apiKeyProvider = ApiKeyProvider { "v2-test-api-key" },
             ).use { fixture ->
                 fixture.client.stream(flowOf(byteArrayOf(1))).toList()
@@ -125,18 +144,6 @@ class CloudSttV2ClientTest {
                 assertEquals("v2-test-api-key", fixture.metadataCapture.apiKey)
                 assertNull(fixture.metadataCapture.authorization)
                 assertNull(fixture.metadataCapture.quotaProjectId)
-                assertEquals(0, unusedToken.requestCount)
-            }
-
-            GrpcFixture(
-                service = SuccessfulSpeechService(),
-                tokenProvider = FakeAccessTokenProvider(token = "v2-test-bearer"),
-            ).use { fixture ->
-                fixture.client.stream(flowOf(byteArrayOf(1))).toList()
-
-                assertNull(fixture.metadataCapture.apiKey)
-                assertEquals("Bearer v2-test-bearer", fixture.metadataCapture.authorization)
-                assertEquals(TEST_PROJECT, fixture.metadataCapture.quotaProjectId)
             }
         }
 

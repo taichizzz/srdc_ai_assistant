@@ -37,8 +37,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Streams PCM audio to Google Cloud Speech-to-Text V2 for Chirp 2 or Chirp 3 evaluation.
  *
- * @param accessTokenProvider suspend provider for a current short-lived OAuth bearer token.
- * @param apiKeyProvider suspend provider for an optional API key, which takes precedence.
+ * @param accessTokenProvider suspend provider for a current short-lived OAuth bearer token, which
+ * takes precedence for IAM-gated V2 Chirp calls.
+ * @param apiKeyProvider suspend provider for an optional API-key fallback when no token exists.
  * @param model V2 model identifier; only `chirp_2` and `chirp_3` are accepted.
  * @param projectId GCP project required by the inline recognizer resource path.
  * @param location regional endpoint/recognizer location selected for Chirp availability.
@@ -137,9 +138,13 @@ class CloudSttV2Client internal constructor(
                     return@callbackFlow
                 }
 
-            val apiKey =
+            // V2 Chirp is IAM-gated, so prefer its short-lived bearer token while retaining the
+            // company API key as a fallback. V1 STT and Cloud TTS keep their API-key-first policy.
+            val token =
                 try {
-                    apiKeyProvider.currentApiKey()?.trim()?.takeIf(String::isNotEmpty)
+                    accessTokenProvider.currentToken().trim().takeIf(String::isNotEmpty)
+                } catch (error: CloudSpeechNotConfiguredException) {
+                    null
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
@@ -153,20 +158,12 @@ class CloudSttV2Client internal constructor(
                 }
 
             val credential =
-                if (apiKey != null) {
-                    StreamCredential.ApiKey(apiKey)
+                if (token != null) {
+                    StreamCredential.BearerToken(token, projectId)
                 } else {
-                    val token =
+                    val apiKey =
                         try {
-                            accessTokenProvider.currentToken()
-                        } catch (error: CloudSpeechNotConfiguredException) {
-                            close(
-                                CloudSttException(
-                                    CloudSttFailureReason.NotConfigured,
-                                    CLOUD_NOT_CONFIGURED_MESSAGE,
-                                ),
-                            )
-                            return@callbackFlow
+                            apiKeyProvider.currentApiKey()?.trim()?.takeIf(String::isNotEmpty)
                         } catch (error: CancellationException) {
                             throw error
                         } catch (error: Throwable) {
@@ -178,7 +175,16 @@ class CloudSttV2Client internal constructor(
                             )
                             return@callbackFlow
                         }
-                    StreamCredential.BearerToken(token, projectId)
+                    if (apiKey == null) {
+                        close(
+                            CloudSttException(
+                                CloudSttFailureReason.NotConfigured,
+                                CLOUD_NOT_CONFIGURED_MESSAGE,
+                            ),
+                        )
+                        return@callbackFlow
+                    }
+                    StreamCredential.ApiKey(apiKey)
                 }
 
             val readinessSignals = Channel<Unit>(Channel.CONFLATED)

@@ -15,6 +15,38 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — Chirp V2 service-account token workflow
+
+### Changed
+
+- Changed only `speech/CloudSttV2Client.kt` credential selection to prefer a
+  short-lived OAuth bearer token for IAM-gated Chirp 2/3 calls, falling back to the
+  existing API key only when no token is configured. V1 STT and Cloud TTS retain
+  their API-key-first behavior, and every RPC still sends exactly one credential.
+- Changed `app/build.gradle.kts` so a shell `GCP_STT_ACCESS_TOKEN` overrides the
+  gitignored `local.properties` token for DEBUG builds. Default/release BuildConfig
+  fields remain empty.
+- Updated `local.properties.example` and `docs/demos/M1.1.md` with an external
+  service-account activation/token-minting workflow that keeps the JSON outside the
+  repository and APK while preserving the existing company API key.
+- Updated the V2 in-process gRPC credential test to prove bearer precedence when
+  both modes are configured and API-key fallback when the token is unavailable.
+
+### Notes
+
+- A service-account JSON is used only by the developer's external `gcloud` process
+  to mint an approximately one-hour OAuth access token; the Android app never reads,
+  packages, logs, or persists the JSON/private key.
+- Chose a per-build environment override because it avoids copying the temporary
+  token into a project file and lets the unchanged API key continue serving V1 STT
+  and Cloud TTS.
+- This environment could not read the supplied Downloads file because macOS denied
+  the process access, and `gcloud` was not installed in its shell. Live token minting,
+  IAM role acceptance, Chirp availability, and real-device recognition therefore
+  remain local-machine acceptance steps.
+- Verified the focused in-process `CloudSttV2ClientTest`: all credential, protocol,
+  failure-mapping, and cancellation cases passed without a real credential/network.
+
 ## [2026-07-16] — DEBUG TTS model evaluation picker
 
 ### Added

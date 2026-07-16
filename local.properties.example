@@ -14,16 +14,20 @@ GCP_STT_LOCATION=asia-southeast1
 
 # DEBUG BUILDS ONLY: paste a short-lived OAuth access token generated with:
 #   gcloud auth print-access-token
+# Or inject it for one build without saving it:
+#   GCP_STT_ACCESS_TOKEN="$(gcloud auth print-access-token)" ./gradlew installDebug
 # The token normally expires after about one hour. Never paste a service-account JSON, refresh
 # token, private key, or other long-lived credential here. Production must use an approved
 # organization token broker instead of packaging a developer token.
 GCP_STT_ACCESS_TOKEN=
 
 # DEBUG BUILDS ONLY: plain Google Cloud API key string (commonly starts with AIza...).
-# If non-empty, this takes precedence over GCP_STT_ACCESS_TOKEN for the Cloud STT call. Restrict the
-# key in Google Cloud Console to the Speech-to-Text API and, where company policy supports it, to
-# package com.foxconn.seeandsay plus the signing certificate SHA-1. Never paste a service-account
-# JSON, private key, or other credential file here, and never commit the real value to VCS.
+# V1 STT and Cloud TTS prefer this key. V2 Chirp prefers the bearer token above because its
+# recognizer call is IAM-gated, while retaining the key as a fallback when no token exists. Exactly
+# one credential is sent per request. Restrict the key in Google Cloud Console to the enabled APIs
+# and, where company policy supports it, to package com.foxconn.seeandsay plus the signing
+# certificate SHA-1. Never paste a service-account JSON, private key, or other credential file here,
+# and never commit the real value to VCS.
 GCP_STT_API_KEY=
 
 # DEBUG behavior flag: true tries Cloud TTS first and falls back to the Android device engine;

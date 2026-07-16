@@ -14,7 +14,18 @@ val localProperties =
         }
     }
 
-val debugGcpSttAccessToken = localProperties.getProperty("GCP_STT_ACCESS_TOKEN").orEmpty()
+/**
+ * Short-lived DEBUG bearer token, preferring the current shell over local.properties.
+ *
+ * The environment override lets a developer mint a token from an external service-account JSON
+ * for one build without copying the JSON or token into the repository. The resulting value is
+ * still injected only into DEBUG BuildConfig; release/default variants remain empty.
+ */
+val debugGcpSttAccessToken =
+    System.getenv("GCP_STT_ACCESS_TOKEN")
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: localProperties.getProperty("GCP_STT_ACCESS_TOKEN").orEmpty()
 val debugGcpSttApiKey = localProperties.getProperty("GCP_STT_API_KEY").orEmpty()
 val debugGcpProjectId = localProperties.getProperty("GCP_STT_PROJECT_ID").orEmpty()
 /** DEBUG cloud-first TTS override; absent or malformed local values retain the default true. */
