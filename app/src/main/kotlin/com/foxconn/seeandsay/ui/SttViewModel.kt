@@ -1,26 +1,31 @@
 package com.foxconn.seeandsay.ui
 
 import android.util.Log
-import com.foxconn.seeandsay.BuildConfig
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.config.AccessTokenProvider
+import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.speech.AudioCaptureSource
 import com.foxconn.seeandsay.speech.AudioConfig
 import com.foxconn.seeandsay.speech.BoundedPcmBuffer
 import com.foxconn.seeandsay.speech.CloudSttException
 import com.foxconn.seeandsay.speech.PcmAudioPlayer
-import com.foxconn.seeandsay.speech.SttResult
 import com.foxconn.seeandsay.speech.SttClient
+import com.foxconn.seeandsay.speech.SttResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -32,6 +37,8 @@ import kotlinx.coroutines.launch
  * loopback.
  * @param pcmAudioPlayer raw PCM output used only after debug capture has fully stopped.
  * @param accessTokenProvider provider-neutral, suspendable source for cloud bearer tokens.
+ * @param apiKeyProvider provider-neutral, suspendable source for an optional plain API key.
+ * @param productionSttClient provider-neutral recognizer used by the normal Start/Stop flow.
  * @param debugCloudSttClient provider-neutral cloud stream used only by Phase 5's DEBUG smoke test.
  *
  * Public event methods are intended for Android's main thread. Capture and playback are children of
@@ -43,6 +50,8 @@ class SttViewModel(
     private val audioCaptureSource: AudioCaptureSource,
     private val pcmAudioPlayer: PcmAudioPlayer,
     private val accessTokenProvider: AccessTokenProvider,
+    private val apiKeyProvider: ApiKeyProvider,
+    private val productionSttClient: SttClient,
     private val debugCloudSttClient: SttClient,
 ) : ViewModel() {
 
@@ -51,6 +60,17 @@ class SttViewModel(
     private var pendingCapture = PendingCapture.None
     private var debugPcmBuffer: BoundedPcmBuffer? = null
     private var cloudConfigurationJob: Job? = null
+    private var productionCaptureJob: Job? = null
+    private var productionStopRequested: Boolean = false
+
+    /** Main-thread-confined monotonic identity used to invalidate stale production watchdogs. */
+    private var productionSessionId: Long = 0L
+
+    /** Lifecycle-owned first-response or final-drain delay; cancellation performs no blocking work. */
+    private var productionTimeoutJob: Job? = null
+
+    /** Main-thread-confined owner identity for [productionTimeoutJob], or `null` when disarmed. */
+    private var productionTimeoutSessionId: Long? = null
 
     /**
      * Exposes immutable, lifecycle-friendly UI state to the activity and Compose screen.
@@ -77,17 +97,25 @@ class SttViewModel(
     }
 
     /**
-     * Stops the production microphone collector and transitions to Completed after release.
+     * Stops production microphone input while allowing the cloud stream to drain its final result.
      *
      * @return This function has no return value.
      *
-     * Called on the main thread, this method immediately exposes `Stopping`, then launches a
-     * [viewModelScope] child that cancels and joins the prior capture. Cancellation cleanup failures
-     * remain owned by the recorder; normal cancellation is not shown as an error.
+     * Called on the main thread, this method immediately exposes `Stopping` and cancels only the
+     * structured microphone child. Its `finally` releases AudioRecord before closing the bounded
+     * audio channel; CloudSttClient then half-closes and may emit a final result before the session
+     * becomes Completed. A five-second watchdog cancels a stalled drain and exposes recoverable
+     * Error. Repeated Stop is harmless, and normal cancellation is never an error.
      */
     fun onStopRequested() {
         val state = mutableUiState.value
-        if (state.isDebugRecording || state.isDebugPlaybackActive) return
+        if (
+            state.isDebugRecording ||
+                state.isDebugPlaybackActive ||
+                state.isCloudSttSmokeTestRunning
+        ) {
+            return
+        }
         if (
             state.status != SttStatus.Listening &&
                 state.status != SttStatus.Connecting &&
@@ -97,13 +125,16 @@ class SttViewModel(
         }
 
         mutableUiState.update {
-            it.copy(status = SttStatus.Stopping, partialTranscript = "", errorMessage = null)
+            it.copy(status = SttStatus.Stopping, errorMessage = null)
         }
-        replaceSession {
-            mutableUiState.update {
-                it.copy(status = SttStatus.Completed, partialTranscript = "")
-            }
+        if (!productionStopRequested) {
+            productionStopRequested = true
+            armProductionTimeout(
+                sessionId = productionSessionId,
+                timeoutMillis = FINAL_DRAIN_TIMEOUT_MS,
+            )
         }
+        productionCaptureJob?.cancel()
     }
 
     /**
@@ -209,8 +240,9 @@ class SttViewModel(
      * @return This function has no return value.
      *
      * The synchronous main-thread method launches no new session. A newly granted permission clears
-     * permission errors without auto-starting. Revocation cancels active work and resets debug state;
-     * recorder/player `finally` blocks release resources asynchronously through [viewModelScope].
+     * permission errors without auto-starting. Revocation invalidates watchdogs, cancels active work,
+     * and resets debug state; recorder/player `finally` blocks release resources asynchronously
+     * through [viewModelScope].
      */
     fun onMicrophonePermissionObserved(isGranted: Boolean) {
         mutableUiState.update { current ->
@@ -229,6 +261,8 @@ class SttViewModel(
 
                 current.microphonePermission == MicrophonePermissionStatus.Granted -> {
                     pendingCapture = PendingCapture.None
+                    productionSessionId += 1L
+                    cancelProductionTimeout()
                     sessionJob?.cancel()
                     debugPcmBuffer = null
                     current.copy(
@@ -249,7 +283,7 @@ class SttViewModel(
     }
 
     /**
-     * Submits emulator/debug text through the same final-result reducer used by future cloud STT.
+     * Submits emulator/debug text through the same final-result reducer used by production STT.
      *
      * @param transcript manually entered transcript; surrounding whitespace is ignored.
      * @return This function has no return value.
@@ -278,17 +312,30 @@ class SttViewModel(
      * @return This function has no return value.
      *
      * The reducer is synchronous, intended for main-thread event delivery, and has no cancellation
-     * behavior. Blank text is ignored. It performs no provider/network work and does not alter the
-     * debug capture/playback flags.
+     * behavior. Blank text is ignored. While a tracked production capture/drain is active, a final
+     * result preserves Listening/Stopping so the push-to-talk Stop control remains usable;
+     * permission-independent typed input still moves an inactive session to Completed. It performs
+     * no provider/network work and does not alter debug capture/playback flags.
      */
     fun onSttResult(result: SttResult) {
         val transcript = result.transcript.trim()
         if (transcript.isEmpty()) return
+        val isProductionSessionActive =
+            productionCaptureJob?.isActive == true || productionStopRequested
 
         mutableUiState.update { current ->
             if (result.isFinal) {
                 current.copy(
-                    status = SttStatus.Completed,
+                    status =
+                        when {
+                            isProductionSessionActive &&
+                                current.status == SttStatus.Connecting -> SttStatus.Connecting
+                            isProductionSessionActive &&
+                                current.status == SttStatus.Listening -> SttStatus.Listening
+                            isProductionSessionActive &&
+                                current.status == SttStatus.Stopping -> SttStatus.Stopping
+                            else -> SttStatus.Completed
+                        },
                     partialTranscript = "",
                     finalTranscript = appendFinalTranscript(current.finalTranscript, transcript),
                     errorMessage = null,
@@ -304,14 +351,15 @@ class SttViewModel(
     }
 
     /**
-     * Checks only whether the local cloud speech token provider has a non-blank token available.
+     * Checks whether either local cloud-speech credential provider has usable configuration.
      *
      * @return This function has no return value.
      *
      * The main-thread event launches one [viewModelScope] child and never performs a network call.
-     * A typed missing-token failure maps to visible recoverable UI state; all other provider failures
-     * use a fixed non-secret message. Repeated requests while running are ignored, and ViewModel or
-     * Retry cancellation cancels a future broker-backed provider call cooperatively.
+     * API-key presence takes precedence, matching CloudSttClient; otherwise the token provider is
+     * consulted. A typed missing-token failure means neither credential exists and maps to visible
+     * recoverable UI state. Other provider failures use a fixed non-secret message. Repeated requests
+     * while running are ignored, and ViewModel or Retry cancellation propagates cooperatively.
      */
     fun onCloudConfigurationCheckRequested() {
         val current = mutableUiState.value
@@ -336,9 +384,13 @@ class SttViewModel(
         cloudConfigurationJob =
             viewModelScope.launch {
                 try {
-                    // Presence is all Phase 4 may verify. Discarding the value avoids retaining or
-                    // exposing it in ViewModel/UI state before Phase 5 constructs an authenticated call.
-                    accessTokenProvider.currentToken()
+                    // Match the client's API-key precedence so the check describes the credential
+                    // mode the next RPC will actually use. Values are discarded immediately because
+                    // local presence—not credential content or Google acceptance—is the only result.
+                    val hasApiKey = apiKeyProvider.currentApiKey()?.isNotBlank() == true
+                    if (!hasApiKey && accessTokenProvider.currentToken().isBlank()) {
+                        throw CloudSpeechNotConfiguredException()
+                    }
                     mutableUiState.update {
                         it.copy(
                             cloudConfiguration = CloudConfigurationStatus.Configured,
@@ -361,11 +413,16 @@ class SttViewModel(
      *
      * @return This function has no return value.
      *
-     * The synchronous main-thread method cancels any stale session and returns to Idle. It does not
-     * retry device work directly; normal lifecycle cancellation is not surfaced as another error.
+     * The synchronous main-thread method invalidates watchdogs, cancels any stale session, and
+     * returns to Idle. It does not retry device work directly; normal lifecycle cancellation is not
+     * surfaced as another error.
      */
     fun onRetryRequested() {
         pendingCapture = PendingCapture.None
+        productionSessionId += 1L
+        cancelProductionTimeout()
+        productionStopRequested = false
+        productionCaptureJob?.cancel()
         sessionJob?.cancel()
         cloudConfigurationJob?.cancel()
         debugPcmBuffer = null
@@ -445,15 +502,23 @@ class SttViewModel(
     }
 
     /**
-     * Starts real production capture and discards PCM until Phase 6 connects the production client.
+     * Starts one production microphone-to-STT stream and reduces its live recognition results.
      *
      * @return This function has no return value.
      *
      * Called on the main thread, it exposes Connecting and replaces the lifecycle-owned session.
-     * Once the prior session is joined it enters Listening and collects on the source's dispatcher.
-     * Capture failure becomes Error; replacement/lifecycle cancellation is rethrown and hidden.
+     * After the prior session is joined it creates a bounded audio channel, starts capture as a
+     * structured child, and collects [productionSttClient] results through [onSttResult]. Stop
+     * cancels only capture so channel completion can half-close/drain cloud results. A first
+     * non-blank transcript disarms the connection watchdog; Stop installs a separate drain bound.
+     * Cloud/device/timeout failures become recoverable Error, while replacement/lifecycle
+     * cancellation is rethrown and hidden.
      */
     private fun startProductionCapture() {
+        productionSessionId += 1L
+        val sessionId = productionSessionId
+        cancelProductionTimeout()
+        productionStopRequested = false
         mutableUiState.update {
             it.copy(
                 status = SttStatus.Connecting,
@@ -464,16 +529,81 @@ class SttViewModel(
             )
         }
         replaceSession {
-            mutableUiState.update { it.copy(status = SttStatus.Listening) }
+            if (productionStopRequested) {
+                cancelProductionTimeout(sessionId)
+                mutableUiState.update {
+                    it.copy(status = SttStatus.Completed, partialTranscript = "")
+                }
+                productionStopRequested = false
+                return@replaceSession
+            }
+
+            val audioChannel = Channel<ByteArray>(capacity = PRODUCTION_AUDIO_BUFFER_CAPACITY)
             try {
-                // Production intentionally remains unchanged in Phase 5; Phase 6 replaces this
-                // terminal collector with SttClient.stream and owns transcript reduction.
-                audioCaptureSource.capture().collect()
-                mutableUiState.update { it.copy(status = SttStatus.Completed) }
+                coroutineScope {
+                    val captureJob =
+                        launch {
+                            try {
+                                audioCaptureSource.capture().collect { chunk ->
+                                    audioChannel.send(chunk)
+                                }
+                            } finally {
+                                // Closing only after MicRecorder's Flow has unwound guarantees the
+                                // mic release precedes the cloud half-close and any later playback.
+                                audioChannel.close()
+                            }
+                        }
+                    productionCaptureJob = captureJob
+                    if (productionStopRequested) captureJob.cancel()
+
+                    mutableUiState.update {
+                        it.copy(
+                            status =
+                                if (productionStopRequested) {
+                                    SttStatus.Stopping
+                                } else {
+                                    SttStatus.Listening
+                                },
+                        )
+                    }
+                    armProductionTimeout(
+                        sessionId = sessionId,
+                        timeoutMillis = FIRST_RESPONSE_TIMEOUT_MS,
+                    )
+                    var hasReceivedTranscript = false
+                    try {
+                        productionSttClient
+                            .stream(audioChannel.receiveAsFlow())
+                            .collect { result ->
+                                if (!hasReceivedTranscript && result.transcript.isNotBlank()) {
+                                    hasReceivedTranscript = true
+                                    // Stop replaces the first-response watchdog with a drain
+                                    // watchdog; a late response must not disable that drain bound.
+                                    if (!productionStopRequested) {
+                                        cancelProductionTimeout(sessionId)
+                                    }
+                                }
+                                onSttResult(result)
+                            }
+                    } finally {
+                        // Provider completion or failure must never leave the microphone running.
+                        captureJob.cancelAndJoin()
+                    }
+                }
+                mutableUiState.update {
+                    it.copy(status = SttStatus.Completed, partialTranscript = "")
+                }
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: CloudSttException) {
+                showProductionCloudFailure(error)
             } catch (error: Throwable) {
-                showSessionError(error, CAPTURE_ERROR_FALLBACK)
+                showProductionFailure()
+            } finally {
+                cancelProductionTimeout(sessionId)
+                audioChannel.close()
+                productionCaptureJob = null
+                productionStopRequested = false
             }
         }
     }
@@ -744,6 +874,85 @@ class SttViewModel(
     }
 
     /**
+     * Arms a lifecycle-owned lack-of-progress watchdog for one production STT session.
+     *
+     * @param sessionId monotonic identity of the production session being guarded.
+     * @param timeoutMillis positive virtual/real duration allowed before progress is required.
+     * @return This function has no return value.
+     * @throws IllegalArgumentException when [timeoutMillis] is not positive.
+     *
+     * Called on the main thread, it replaces any prior watchdog and launches one cancellable
+     * [viewModelScope] delay. Expiry cancels and joins the captured session job so MicRecorder and
+     * the RPC clean up before a fixed recoverable Error is published. A newer session or Retry
+     * invalidates the identity, preventing stale timeout errors. No credential or audio is logged.
+     */
+    private fun armProductionTimeout(
+        sessionId: Long,
+        timeoutMillis: Long,
+    ) {
+        require(timeoutMillis > 0L) { "Production timeout must be positive." }
+        cancelProductionTimeout()
+        val sessionToCancel = sessionJob
+        productionTimeoutSessionId = sessionId
+        productionTimeoutJob =
+            viewModelScope.launch {
+                delay(timeoutMillis)
+                if (
+                    productionSessionId != sessionId ||
+                        productionTimeoutSessionId != sessionId
+                ) {
+                    return@launch
+                }
+
+                // Clear ownership before joining: the cancelled session's finally block must not
+                // cancel this watchdog before it can publish the recoverable timeout state.
+                productionTimeoutJob = null
+                productionTimeoutSessionId = null
+                sessionToCancel?.cancelAndJoin()
+                if (productionSessionId == sessionId) {
+                    showProductionTimeout()
+                }
+            }
+    }
+
+    /**
+     * Cancels the current production watchdog when it belongs to the requested session.
+     *
+     * @param sessionId optional identity guard; `null` cancels any active production watchdog.
+     * @return This function has no return value.
+     *
+     * Called on the main thread, this function performs no I/O or suspension. Delay cancellation is
+     * cooperative and lifecycle-owned; a mismatched identity is ignored so an older session's
+     * cleanup cannot cancel a newer session's timeout. It throws no project-specific failure.
+     */
+    private fun cancelProductionTimeout(sessionId: Long? = null) {
+        if (sessionId != null && productionTimeoutSessionId != sessionId) return
+        productionTimeoutJob?.cancel()
+        productionTimeoutJob = null
+        productionTimeoutSessionId = null
+    }
+
+    /**
+     * Publishes the stable recoverable state used by both production timeout boundaries.
+     *
+     * @return This function has no return value.
+     *
+     * Called on the main thread only after the timed-out session has been cancelled and joined. It
+     * performs no I/O, logging, suspension, or independent cancellation, and uses a fixed message so
+     * no credential, RPC detail, or audio can reach UI state.
+     */
+    private fun showProductionTimeout() {
+        productionStopRequested = false
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Error,
+                partialTranscript = "",
+                errorMessage = PRODUCTION_TIMEOUT_ERROR,
+            )
+        }
+    }
+
+    /**
      * Converts an audio component failure into a stable recoverable UI state.
      *
      * @param error failure thrown by capture or playback.
@@ -767,19 +976,59 @@ class SttViewModel(
     }
 
     /**
-     * Maps the typed absent-token condition to a recoverable, non-secret UI error.
+     * Exposes a known provider-neutral CloudSttClient failure as recoverable production state.
+     *
+     * @param error cloud failure carrying only a fixed non-secret user message and reason.
+     * @return This function has no return value.
+     *
+     * Called on the main-confined production session after structured capture/stream cleanup. It
+     * performs no I/O, logging, or suspension and owns no cancellation. Avoiding provider exception
+     * logging guarantees credential metadata cannot enter diagnostics through this path.
+     */
+    private fun showProductionCloudFailure(error: CloudSttException) {
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Error,
+                partialTranscript = "",
+                errorMessage = error.message ?: PRODUCTION_STT_ERROR,
+            )
+        }
+    }
+
+    /**
+     * Exposes an unexpected production microphone/STT failure using a fixed recoverable message.
      *
      * @return This function has no return value.
      *
-     * Called on the main-confined ViewModel coroutine after [AccessTokenProvider.currentToken]
-     * fails. It performs no I/O or suspension, has no independent cancellation behavior, and uses
-     * only the exception type's fixed message so credential values cannot reach logs or state.
+     * Called on the main-confined production session after child cleanup. It performs no I/O,
+     * logging, or suspension and owns no cancellation. A fixed message intentionally avoids leaking
+     * raw provider, audio, or credential detail from an unexpected exception.
+     */
+    private fun showProductionFailure() {
+        mutableUiState.update {
+            it.copy(
+                status = SttStatus.Error,
+                partialTranscript = "",
+                errorMessage = PRODUCTION_STT_ERROR,
+            )
+        }
+    }
+
+    /**
+     * Maps absence of both supported credential modes to a recoverable, non-secret UI error.
+     *
+     * @return This function has no return value.
+     *
+     * Called on the main-confined ViewModel coroutine after the API-key provider returns absent and
+     * [AccessTokenProvider.currentToken] reports missing configuration. It performs no I/O or
+     * suspension, has no independent cancellation behavior, and uses a fixed existing cloud message
+     * so credential values cannot reach logs or state.
      */
     private fun showCloudNotConfigured() {
         mutableUiState.update {
             it.copy(
                 status = SttStatus.Error,
-                errorMessage = CloudSpeechNotConfiguredException.USER_MESSAGE,
+                errorMessage = CLOUD_NOT_CONFIGURED_ERROR,
                 cloudConfiguration = CloudConfigurationStatus.NotConfigured,
                 isCloudConfigurationCheckRunning = false,
             )
@@ -829,7 +1078,7 @@ class SttViewModel(
         /** No permission-gated action is waiting. */
         None,
 
-        /** Normal push-to-talk capture that Phase 5 will stream to STT. */
+        /** Normal push-to-talk capture streamed through the production SttClient. */
         Production,
 
         /** Bounded debug capture followed by raw PCM playback. */
@@ -845,7 +1094,10 @@ class SttViewModel(
      * @param audioCaptureSource cold microphone source shared by both capture paths.
      * @param pcmAudioPlayer record-then-playback verifier.
      * @param accessTokenProvider lazy provider for the debug-only local token presence check and
-     * future Phase 5 authentication.
+     * cloud authentication.
+     * @param apiKeyProvider lazy provider for the debug-only API-key presence check and cloud
+     * authentication.
+     * @param productionSttClient provider-neutral recognizer used by production Start/Stop.
      * @param debugCloudSttClient provider-neutral streaming client used only by DEBUG smoke UI.
      *
      * Factory creation is synchronous on Android's main thread. It performs no audio I/O and owns no
@@ -855,6 +1107,8 @@ class SttViewModel(
         private val audioCaptureSource: AudioCaptureSource,
         private val pcmAudioPlayer: PcmAudioPlayer,
         private val accessTokenProvider: AccessTokenProvider,
+        private val apiKeyProvider: ApiKeyProvider,
+        private val productionSttClient: SttClient,
         private val debugCloudSttClient: SttClient,
     ) : ViewModelProvider.Factory {
 
@@ -877,22 +1131,28 @@ class SttViewModel(
                 audioCaptureSource,
                 pcmAudioPlayer,
                 accessTokenProvider,
+                apiKeyProvider,
+                productionSttClient,
                 debugCloudSttClient,
             ) as T
         }
     }
 
     /**
-     * Releases the reusable DEBUG cloud client's channel when Android disposes this ViewModel.
+     * Releases production and DEBUG cloud clients when Android disposes this ViewModel.
      *
      * @return This lifecycle callback has no return value.
      *
      * Android invokes this on the main thread after lifecycle-owned coroutines are cancelled. The
-     * generic AutoCloseable check keeps UI independent of CloudSttClient/gRPC types; close is
-     * non-suspending, cancels active RPCs, and throws no expected project-specific failure.
+     * generic AutoCloseable checks keep UI independent of CloudSttClient/gRPC types. When both roles
+     * share one client instance it is closed exactly once; close is non-suspending, cancels active
+     * RPCs, and throws no expected project-specific failure.
      */
     override fun onCleared() {
-        (debugCloudSttClient as? AutoCloseable)?.close()
+        (productionSttClient as? AutoCloseable)?.close()
+        if (debugCloudSttClient !== productionSttClient) {
+            (debugCloudSttClient as? AutoCloseable)?.close()
+        }
         super.onCleared()
     }
 
@@ -905,8 +1165,21 @@ class SttViewModel(
         const val GENERIC_RECOVERY_ERROR = "The recovery action could not be opened. Please retry."
         const val CAPTURE_ERROR_FALLBACK = "Microphone capture failed. Please retry."
         const val PLAYBACK_ERROR_FALLBACK = "Debug audio playback failed. Please retry."
+        const val PRODUCTION_STT_ERROR = "Speech recognition failed. Please retry."
         const val CLOUD_PROVIDER_ERROR =
             "Cloud speech authentication is unavailable. Check local configuration and retry."
         const val CLOUD_STT_SMOKE_ERROR = "Cloud STT test failed. Please retry."
+        const val CLOUD_NOT_CONFIGURED_ERROR =
+            "Cloud speech is not configured. Add an approved credential and retry."
+        const val PRODUCTION_AUDIO_BUFFER_CAPACITY = 4
+
+        /** Maximum wait for the first non-blank production recognition result. */
+        const val FIRST_RESPONSE_TIMEOUT_MS = 15_000L
+
+        /** Maximum wait for cloud stream completion after production microphone Stop. */
+        const val FINAL_DRAIN_TIMEOUT_MS = 5_000L
+
+        /** Fixed non-secret recovery message shared by both production watchdogs. */
+        const val PRODUCTION_TIMEOUT_ERROR = "Speech recognition timed out. Please retry."
     }
 }

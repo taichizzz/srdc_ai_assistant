@@ -4,8 +4,8 @@ package com.foxconn.seeandsay.ui
  * Describes the user-visible phase of one M1.1 push-to-talk session.
  *
  * The values are pure state with no dispatcher or cancellation behavior. `Connecting` and
- * `Stopping` are declared now so later audio/cloud phases can expose those asynchronous boundaries
- * without changing the UI contract.
+ * `Stopping` expose the asynchronous cloud-stream boundaries without leaking provider types into
+ * UI state.
  */
 enum class SttStatus {
     /** No permission request or speech session is active. */
@@ -14,19 +14,19 @@ enum class SttStatus {
     /** Android's microphone permission request is in progress. */
     RequestingPermission,
 
-    /** A future STT implementation is establishing its cloud stream. */
+    /** The production or debug STT path is establishing its microphone/cloud stream. */
     Connecting,
 
     /** A production or debug microphone capture Flow is actively being collected. */
     Listening,
 
-    /** A future STT implementation is closing audio and awaiting final results. */
+    /** Microphone input is closed and the active cloud stream is draining final results. */
     Stopping,
 
     /** The user stopped or a final transcript was committed. */
     Completed,
 
-    /** A recoverable permission, platform, or future speech failure is visible. */
+    /** A recoverable permission, platform, microphone, or cloud speech failure is visible. */
     Error,
 }
 
@@ -54,18 +54,18 @@ enum class MicrophonePermissionStatus {
 /**
  * Describes whether the local installation has supplied cloud speech authentication material.
  *
- * This state reports configuration presence only; `Configured` does not claim that Google has
- * accepted the token because Phase 4 performs no network request. Values are immutable, perform no
- * work, fail in no way, and have no threading or cancellation behavior.
+ * This state reports API-key or OAuth-token presence only; `Configured` does not claim that Google
+ * has accepted the selected credential because the check performs no network request. Values are
+ * immutable, perform no work, fail in no way, and have no threading or cancellation behavior.
  */
 enum class CloudConfigurationStatus {
     /** The user has not asked the development provider to inspect local configuration. */
     NotChecked,
 
-    /** A non-blank short-lived token is present; remote acceptance remains unverified. */
+    /** A non-blank API key or short-lived OAuth token is present; acceptance is unverified. */
     Configured,
 
-    /** No non-blank short-lived token is present in this build. */
+    /** Neither a non-blank API key nor a short-lived OAuth token is present in this build. */
     NotConfigured,
 }
 
@@ -81,7 +81,7 @@ enum class CloudConfigurationStatus {
  * @property isDebugPlaybackActive whether raw debug PCM is currently playing.
  * @property debugCapturedBytes number of bytes retained for the current/last debug recording.
  * @property debugBufferLimitReached whether the ten-second memory cap stopped debug recording.
- * @property cloudConfiguration local access-token presence without exposing credential content.
+ * @property cloudConfiguration local API-key/token presence without exposing credential content.
  * @property isCloudConfigurationCheckRunning whether the suspend provider check is active.
  * @property isCloudSttSmokeTestRunning whether DEBUG mic audio is routed only to CloudSttClient.
  * @property cloudSmokePartialTranscript latest raw interim text from the DEBUG cloud stream.

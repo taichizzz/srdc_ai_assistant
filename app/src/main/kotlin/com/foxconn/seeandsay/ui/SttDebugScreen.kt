@@ -30,15 +30,15 @@ import com.foxconn.seeandsay.R
  * Renders the minimal M1.1 push-to-talk and typed-transcript debug interface.
  *
  * @param state immutable ViewModel state to display.
- * @param onStart invoked when the user requests production microphone capture.
- * @param onStop invoked when the user requests production microphone release.
+ * @param onStart invoked when the user requests production microphone/cloud recognition.
+ * @param onStop invoked when the user requests microphone release and final-result draining.
  * @param onDebugRecordAndPlayback invoked to start debug recording or stop it and play retained PCM.
  * @param onCloudSttSmokeTest invoked to start or stop the isolated DEBUG cloud round trip.
- * @param onCloudConfigurationCheck invoked to inspect local token presence without a network call.
+ * @param onCloudConfigurationCheck invoked to inspect local key/token presence without a network call.
  * @param onRetry invoked to clear a recoverable error.
  * @param onOpenSettings invoked when permanent permission denial requires Android Settings.
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
- * through the same final-result reducer as future cloud STT.
+ * through the same final-result reducer as production cloud STT.
  * @return This composable emits UI and has no return value.
  *
  * Composition and callbacks run on Android's main thread. The composable launches no coroutine,

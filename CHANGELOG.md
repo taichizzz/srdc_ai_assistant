@@ -15,6 +15,121 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — M1.1 closeout: timeout, credential check, and acceptance
+
+### Added
+
+- Added production lack-of-progress watchdogs in `ui/SttViewModel.kt`: a bounded
+  first-transcript wait and a separate final-drain wait after Stop. Expiry cancels
+  and joins microphone/RPC work before exposing recoverable Error with Retry.
+- Added three focused `ui/SttViewModelTest.kt` tests: one covers API-key-only,
+  token-only, both, and neither local configuration; two use coroutine virtual time
+  to cover stalled first response and stalled Stop-time drain.
+
+### Changed
+
+- Changed the local cloud-configuration check to inspect `ApiKeyProvider` first and
+  fall back to `AccessTokenProvider`, matching the existing CloudSttClient credential
+  precedence without retaining, displaying, or logging either value.
+- Changed `ui/MainActivity.kt` composition to share the same
+  `BuildConfigApiKeyProvider` between the configuration check and CloudSttClient.
+- Updated `ui/SttUiState.kt`, `ui/SttDebugScreen.kt`, and `strings.xml` so local
+  configuration explicitly means API-key or OAuth-token presence, not remote Google
+  acceptance.
+- Replaced `docs/demos/M1.1.md` with the final reproducible M1.1 acceptance script,
+  separating deterministic build/unit checks from real-device, microphone, network,
+  and live-credential checks.
+
+### Notes
+
+- Chose 15 seconds for a first non-blank STT transcript because short push-to-talk
+  commands should show recognition progress promptly while still allowing device,
+  TLS, and cloud setup latency.
+- Chose 5 seconds for Stop-time final draining because MicRecorder is already closed
+  at that boundary and a short final response must not leave the UI in Stopping.
+- Cancelled the first-response watchdog after the first non-blank interim or final
+  because it guards connection/no-progress stalls, not total speaking duration.
+- Used monotonic production-session identities because a stale watchdog must never
+  cancel or overwrite a newer Start or a Retry recovery.
+- Kept both watchdogs in `viewModelScope` and cancel-and-joined the captured session
+  on expiry because microphone and RPC cleanup must precede visible timeout Error.
+- Kept API-key precedence consistent with CloudSttClient because the configuration
+  indicator should describe the credential mode the next RPC will actually select.
+- Kept the check local-only: Configured means a credential is present in the debug
+  build, not that Google accepted it or that API/billing/quota is valid.
+- Added no broad error taxonomy and made no changes to `SttClient`, `SttResult`,
+  `GcpSttConfig`, `CloudSttClient`, or speech/bridge/decision/pipeline/TTS/
+  Accessibility implementations.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`:
+  all 34 unit tests passed (including 17 ViewModel tests), debug/release APKs
+  assembled, and Android lint completed without a blocking issue.
+- Live API-key acceptance, Taiwan-Mandarin recognition, physical microphone release,
+  and vehicle/device connectivity remain explicit real-device acceptance items; the
+  repository environment did not make a live Google speech call.
+
+## [2026-07-16] — M1.1 Phase 6: Production streaming transcription
+
+### Added
+
+- Added production `SttClient` injection to `ui/SttViewModel.kt` and its Factory,
+  with `ui/MainActivity.kt` composing the existing `CloudSttClient` behind the
+  provider-neutral interface.
+- Added a bounded production audio handoff that streams the existing MicRecorder
+  Flow into `SttClient.stream` and reduces every emitted interim/final `SttResult`
+  through the existing production transcript path.
+- Added five focused `SttViewModelTest.kt` scenarios for production interim/final
+  reduction, prior-session replacement, Stop-time final draining, recoverable cloud
+  failure plus Retry, and cancellation that remains invisible to the user.
+- Added a reproducible Phase 6 no-credential checkpoint and live production
+  speak-to-text acceptance procedure to `docs/demos/M1.1.md`.
+
+### Changed
+
+- Changed normal **Start** from microphone-only collection to one structured
+  MicRecorder → production SttClient session. Starting again cancels and joins the
+  predecessor before the replacement owns microphone/network resources.
+- Changed normal **Stop** to cancel only the production capture child, retain
+  `Stopping`, and let audio completion half-close the existing cloud stream so a
+  delayed final result can arrive before `Completed`.
+- Changed the production reducer's status handling so finals received during an
+  active push-to-talk session preserve `Listening`/`Stopping`; transcript behavior
+  remains partial replacement, one final append, and partial clearing.
+- Changed `ui/SttUiState.kt`, `ui/SttDebugScreen.kt`, and MainActivity KDoc to
+  describe real production cloud boundaries while preserving typed input, DEBUG
+  PCM loopback, and the isolated DEBUG cloud smoke-test fields.
+- Changed production failure handling to leave every cloud/microphone failure in a
+  recoverable `Error` state using fixed or existing non-secret messages; normal
+  `CancellationException` is still propagated internally and never shown.
+
+### Notes
+
+- Reused one `CloudSttClient` instance for production and DEBUG smoke roles because
+  the UI makes their microphone sessions mutually exclusive and one reusable TLS
+  channel avoids duplicate network resources; ViewModel disposal closes it once.
+- Kept ViewModel typed only against `SttClient` because provider, gRPC, protobuf,
+  credential-mode, and Google-specific details must remain outside the UI layer.
+- Chose a four-chunk production channel because it matches Phase 5's bounded
+  approximately 400 ms uplink window and prevents unbounded memory growth under
+  backpressure without adding a second microphone capture path.
+- Closed the audio channel only after MicRecorder collection unwinds because the
+  microphone must be released before cloud half-close/completion, preserving the
+  echo rule and safe future playback ordering.
+- Cancelled and joined the entire prior session on a new Start, but only the capture
+  child on Stop, because replacement prioritizes exclusive ownership while an
+  ordinary Stop must still drain Google's final recognition response.
+- Preserved the existing shared final-transcript reducer for cloud and typed input
+  because emulator/later-phase testing must exercise the same committed-text path;
+  the DEBUG cloud smoke results remain deliberately isolated.
+- Made no changes to `CloudSttClient`, `SttClient`, `SttResult`, `GcpSttConfig`,
+  credential plumbing, or any speech/config/bridge/decision/pipeline/TTS/
+  Accessibility implementation.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`:
+  all 31 unit tests passed (including 14 ViewModel tests), debug/release APKs
+  assembled, and Android lint completed without a blocking issue.
+- Live Google credential acceptance, Taiwan-Mandarin interim/final transcripts,
+  network/quota behavior, and physical microphone release could not be verified in
+  repository tests; they require one approved live credential and a real mic device.
+
 ## [2026-07-16] — M1.1 Phase 5 amendment: API-key authentication
 
 ### Added

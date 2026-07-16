@@ -2,15 +2,22 @@ package com.foxconn.seeandsay.ui
 
 import com.foxconn.seeandsay.MainDispatcherRule
 import com.foxconn.seeandsay.config.AccessTokenProvider
+import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.FakeAccessTokenProvider
 import com.foxconn.seeandsay.speech.AudioCaptureSource
+import com.foxconn.seeandsay.speech.CloudSttException
+import com.foxconn.seeandsay.speech.CloudSttFailureReason
 import com.foxconn.seeandsay.speech.FakeSttClient
 import com.foxconn.seeandsay.speech.PcmAudioPlayer
 import com.foxconn.seeandsay.speech.SttClient
 import com.foxconn.seeandsay.speech.SttResult
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,12 +27,13 @@ import org.junit.Rule
 import org.junit.Test
 
 /**
- * Verifies Phase 2 reducers remain correct after Phase 3 adds lifecycle-owned audio coroutines.
+ * Verifies production STT reduction, structured Start/Stop lifecycle, recovery, and debug isolation.
  *
- * Tests run against inert fake audio boundaries with a controlled main dispatcher. They perform no
- * Android, microphone, speaker, or network I/O. Each active fake capture is explicitly stopped or
- * cancelled so test completion exercises ViewModel session cancellation.
+ * Tests run against fake audio/STT boundaries with a controlled main dispatcher. They perform no
+ * Android, microphone, speaker, or network I/O. Each active fake session is explicitly stopped or
+ * cancelled so test completion exercises structured cleanup and never depends on timing sleeps.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class SttViewModelTest {
 
     /** Controlled `Dispatchers.Main` replacement required by `viewModelScope`. */
@@ -227,7 +235,7 @@ class SttViewModelTest {
         }
 
     /**
-     * Verifies a typed missing-token failure becomes recoverable UI state without breaking input.
+     * Verifies both missing credential modes become recoverable state without breaking typed input.
      *
      * @return This test has no return value.
      *
@@ -250,10 +258,7 @@ class SttViewModelTest {
                 CloudConfigurationStatus.NotConfigured,
                 viewModel.uiState.value.cloudConfiguration,
             )
-            assertEquals(
-                CloudSpeechNotConfiguredException.USER_MESSAGE,
-                viewModel.uiState.value.errorMessage,
-            )
+            assertTrue(viewModel.uiState.value.errorMessage?.contains("approved credential") == true)
 
             viewModel.onRetryRequested()
             assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
@@ -261,6 +266,63 @@ class SttViewModelTest {
 
             viewModel.submitTypedTranscript("顯示")
             assertEquals("顯示", viewModel.uiState.value.finalTranscript)
+        }
+
+    /**
+     * Verifies local configuration recognizes every supported credential-presence combination.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] executes four in-memory providers on the controlled dispatcher with no credential,
+     * filesystem, logging, or network access. It fails if API-key-only, token-only, or both are not
+     * Configured, or if absence of both does not become NotConfigured. No child remains active.
+     */
+    @Test
+    fun cloudConfigurationCheckRecognizesApiKeyTokenBothAndNeither() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val missingToken = CloudSpeechNotConfiguredException()
+            val apiKeyOnly =
+                createViewModel(
+                    apiKeyProvider = ApiKeyProvider { "test-api-key" },
+                    accessTokenProvider = FakeAccessTokenProvider(failure = missingToken),
+                )
+            val tokenOnly =
+                createViewModel(
+                    apiKeyProvider = ApiKeyProvider { null },
+                    accessTokenProvider = FakeAccessTokenProvider(token = "test-token"),
+                )
+            val both =
+                createViewModel(
+                    apiKeyProvider = ApiKeyProvider { "test-api-key" },
+                    accessTokenProvider = FakeAccessTokenProvider(token = "test-token"),
+                )
+            val neither =
+                createViewModel(
+                    apiKeyProvider = ApiKeyProvider { null },
+                    accessTokenProvider = FakeAccessTokenProvider(failure = missingToken),
+                )
+
+            apiKeyOnly.onCloudConfigurationCheckRequested()
+            tokenOnly.onCloudConfigurationCheckRequested()
+            both.onCloudConfigurationCheckRequested()
+            neither.onCloudConfigurationCheckRequested()
+
+            assertEquals(
+                CloudConfigurationStatus.Configured,
+                apiKeyOnly.uiState.value.cloudConfiguration,
+            )
+            assertEquals(
+                CloudConfigurationStatus.Configured,
+                tokenOnly.uiState.value.cloudConfiguration,
+            )
+            assertEquals(
+                CloudConfigurationStatus.Configured,
+                both.uiState.value.cloudConfiguration,
+            )
+            assertEquals(
+                CloudConfigurationStatus.NotConfigured,
+                neither.uiState.value.cloudConfiguration,
+            )
         }
 
     /**
@@ -299,11 +361,265 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies production interim replacement and final append/partial-clear reduction.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] uses a gated fake SttClient on the controlled main dispatcher so interim state can
+     * be asserted before final delivery. It performs no device/network I/O; completing the gate lets
+     * the finite stream finish and structured cleanup cancels the inert microphone child.
+     */
+    @Test
+    fun productionPartialReplacesAndFinalAppendsOnce() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val allowFinal = CompletableDeferred<Unit>()
+            val productionClient =
+                FakeSttClient {
+                    flow {
+                        emit(SttResult(transcript = "你", isFinal = false))
+                        emit(SttResult(transcript = "你好嗎", isFinal = false))
+                        allowFinal.await()
+                        emit(SttResult(transcript = "你好", isFinal = true))
+                    }
+                }
+            val viewModel = createViewModel(productionSttClient = productionClient)
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+            assertEquals("你好嗎", viewModel.uiState.value.partialTranscript)
+            assertEquals(SttStatus.Listening, viewModel.uiState.value.status)
+
+            allowFinal.complete(Unit)
+
+            val state = viewModel.uiState.value
+            assertEquals("你好", state.finalTranscript)
+            assertTrue(state.partialTranscript.isEmpty())
+            assertEquals(SttStatus.Completed, state.status)
+        }
+
+    /**
+     * Verifies starting again cancels/joins the prior production session before replacement.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] uses two cancellable fake result streams and no platform I/O. The first stream's
+     * `finally` records cancellation; the second remains active until Stop. Failure indicates
+     * overlapping sessions or cancellation being exposed as a user-visible error.
+     */
+    @Test
+    fun startCancelsPriorProductionSessionWithoutVisibleError() =
+        runTest(mainDispatcherRule.dispatcher) {
+            var sessionCount = 0
+            val firstSessionCancelled = CompletableDeferred<Unit>()
+            val productionClient =
+                FakeSttClient { audio ->
+                    val sessionNumber = ++sessionCount
+                    flow {
+                        try {
+                            audio.collect()
+                        } finally {
+                            if (sessionNumber == 1) firstSessionCancelled.complete(Unit)
+                        }
+                    }
+                }
+            val viewModel = createViewModel(productionSttClient = productionClient)
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+            viewModel.onStartRequested()
+
+            assertEquals(2, sessionCount)
+            assertTrue(firstSessionCancelled.isCompleted)
+            assertEquals(SttStatus.Listening, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+
+            viewModel.onStopRequested()
+            assertEquals(SttStatus.Completed, viewModel.uiState.value.status)
+        }
+
+    /**
+     * Verifies Stop releases capture, drains a delayed final result, and then completes.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] records deterministic fake cleanup events and gates the final provider response. It
+     * performs no microphone/network I/O. Stop must leave the UI in Stopping after capture release;
+     * completing the gate emits one final result and lets the session reach Completed.
+     */
+    @Test
+    fun stopReleasesCaptureThenDrainsFinalResult() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val events = mutableListOf<String>()
+            val allowFinal = CompletableDeferred<Unit>()
+            val audioSource =
+                AudioCaptureSource {
+                    flow {
+                        try {
+                            emit(byteArrayOf(1, 2, 3, 4))
+                            awaitCancellation()
+                        } finally {
+                            events += "capture-released"
+                        }
+                    }
+                }
+            val productionClient =
+                FakeSttClient { audio ->
+                    flow {
+                        audio.collect()
+                        events += "audio-input-completed"
+                        allowFinal.await()
+                        emit(SttResult(transcript = "你好", isFinal = true))
+                    }
+                }
+            val viewModel =
+                createViewModel(
+                    audioCaptureSource = audioSource,
+                    productionSttClient = productionClient,
+                )
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+            viewModel.onStartRequested()
+
+            viewModel.onStopRequested()
+
+            assertEquals(
+                listOf("capture-released", "audio-input-completed"),
+                events,
+            )
+            assertEquals(SttStatus.Stopping, viewModel.uiState.value.status)
+            allowFinal.complete(Unit)
+
+            val state = viewModel.uiState.value
+            assertEquals("你好", state.finalTranscript)
+            assertTrue(state.partialTranscript.isEmpty())
+            assertEquals(SttStatus.Completed, state.status)
+        }
+
+    /**
+     * Verifies a production cloud failure is recoverable and Retry restores usable state.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] injects a fixed provider-neutral CloudSttException without network I/O. It fails if
+     * the exception escapes, leaves a busy status, or Retry cannot restore Idle. Structured capture
+     * cancellation is performed by the production session's `finally` block.
+     */
+    @Test
+    fun productionCloudFailureIsRecoverableAndRetryable() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val productionClient =
+                FakeSttClient {
+                    flow {
+                        throw CloudSttException(
+                            CloudSttFailureReason.NotConfigured,
+                            "Cloud speech is not configured. Add an approved credential and retry.",
+                        )
+                    }
+                }
+            val viewModel = createViewModel(productionSttClient = productionClient)
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+
+            assertEquals(SttStatus.Error, viewModel.uiState.value.status)
+            assertTrue(viewModel.uiState.value.errorMessage?.contains("not configured") == true)
+
+            viewModel.onRetryRequested()
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies explicit recovery cancellation is not converted into a production error.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] cancels an indefinitely active fake production stream through Retry. It performs no
+     * device/network I/O; structured CancellationException must remain hidden while state returns to
+     * Idle. The test scope owns and completes all child cleanup.
+     */
+    @Test
+    fun productionCancellationIsNotUserVisible() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val viewModel = createViewModel()
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+            viewModel.onStartRequested()
+
+            viewModel.onRetryRequested()
+
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies a production stream with no first recognition result cannot remain Listening forever.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] uses the fake client's non-emitting Flow and advances virtual time without a real
+     * delay. Watchdog expiry must cancel structured capture/stream work, publish recoverable Error,
+     * and allow Retry to restore Idle. No microphone or network I/O occurs.
+     */
+    @Test
+    fun stalledFirstResponseTimesOutAndRetryRecovers() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val viewModel = createViewModel()
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+            assertEquals(SttStatus.Listening, viewModel.uiState.value.status)
+
+            advanceUntilIdle()
+
+            assertEquals(SttStatus.Error, viewModel.uiState.value.status)
+            assertTrue(viewModel.uiState.value.errorMessage?.contains("timed out") == true)
+            viewModel.onRetryRequested()
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies Stop cannot remain in final-result draining indefinitely.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] injects a fake that consumes completed audio then suspends forever. Advancing virtual
+     * time expires the drain watchdog, cancels the fake RPC, and exposes recoverable Error; Retry
+     * returns to Idle. The test uses no real delay, microphone, credential, or network.
+     */
+    @Test
+    fun stalledFinalDrainTimesOutAndRetryRecovers() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val stalledClient =
+                FakeSttClient { audio ->
+                    flow {
+                        audio.collect()
+                        awaitCancellation()
+                    }
+                }
+            val viewModel = createViewModel(productionSttClient = stalledClient)
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+            viewModel.onStartRequested()
+
+            viewModel.onStopRequested()
+            assertEquals(SttStatus.Stopping, viewModel.uiState.value.status)
+
+            advanceUntilIdle()
+
+            assertEquals(SttStatus.Error, viewModel.uiState.value.status)
+            assertTrue(viewModel.uiState.value.errorMessage?.contains("timed out") == true)
+            viewModel.onRetryRequested()
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
      * Creates a ViewModel with a cold fake capture that remains active until collector cancellation.
      *
      * @param audioCaptureSource cold fake PCM source for the test scenario.
      * @param pcmAudioPlayer fake raw PCM sink for the test scenario.
      * @param accessTokenProvider fake suspend token source for configuration checks.
+     * @param apiKeyProvider fake suspend API-key source for configuration checks.
+     * @param productionSttClient deterministic recognizer for normal Start/Stop sessions.
      * @param debugCloudSttClient deterministic provider-neutral cloud stream for smoke-test events.
      * @return ViewModel whose capture and playback boundaries perform no platform I/O.
      *
@@ -317,12 +633,19 @@ class SttViewModelTest {
             },
         pcmAudioPlayer: PcmAudioPlayer = PcmAudioPlayer { },
         accessTokenProvider: AccessTokenProvider = FakeAccessTokenProvider(),
+        apiKeyProvider: ApiKeyProvider = ApiKeyProvider { null },
+        productionSttClient: SttClient =
+            FakeSttClient { audio ->
+                flow { audio.collect() }
+            },
         debugCloudSttClient: SttClient = FakeSttClient(),
     ): SttViewModel =
         SttViewModel(
             audioCaptureSource = audioCaptureSource,
             pcmAudioPlayer = pcmAudioPlayer,
             accessTokenProvider = accessTokenProvider,
+            apiKeyProvider = apiKeyProvider,
+            productionSttClient = productionSttClient,
             debugCloudSttClient = debugCloudSttClient,
         )
 }
