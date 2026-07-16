@@ -4,6 +4,8 @@ import android.content.Context
 import com.foxconn.seeandsay.config.AccessTokenProvider
 import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
+import com.foxconn.seeandsay.config.GcpTtsConfig
+import com.foxconn.seeandsay.config.GcpTtsSynthesisProfile
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 
@@ -35,6 +37,7 @@ class CloudTtsClient internal constructor(
      * @param context Android context; only its application context reaches audio services.
      * @param accessTokenProvider provider for the bearer fallback credential.
      * @param apiKeyProvider provider for the preferred Cloud TTS API key.
+     * @param synthesisProfile non-secret classic or Gemini-TTS single-speaker configuration.
      *
      * Construction creates one reusable TLS channel but performs no credential lookup, RPC,
      * synthesis, focus request, or playback. It must occur from normal Android composition. Local
@@ -44,8 +47,14 @@ class CloudTtsClient internal constructor(
         context: Context,
         accessTokenProvider: AccessTokenProvider,
         apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
+        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
     ) : this(
-        createProductionDependencies(context, accessTokenProvider, apiKeyProvider),
+        createProductionDependencies(
+            context,
+            accessTokenProvider,
+            apiKeyProvider,
+            synthesisProfile,
+        ),
     )
 
     /**
@@ -127,6 +136,7 @@ class CloudTtsClient internal constructor(
          * @param context Android context used through its application context.
          * @param accessTokenProvider bearer fallback provider.
          * @param apiKeyProvider preferred API-key provider.
+         * @param synthesisProfile immutable request settings owned by the synthesizer.
          * @return owned synthesizer/player pair for the client lifecycle.
          *
          * Construction is synchronous and starts no RPC/playback/coroutine. Local channel or Android
@@ -137,9 +147,15 @@ class CloudTtsClient internal constructor(
             context: Context,
             accessTokenProvider: AccessTokenProvider,
             apiKeyProvider: ApiKeyProvider,
+            synthesisProfile: GcpTtsSynthesisProfile,
         ): ProductionDependencies =
             ProductionDependencies(
-                synthesizer = CloudTtsSynthesizer(accessTokenProvider, apiKeyProvider),
+                synthesizer =
+                    CloudTtsSynthesizer(
+                        accessTokenProvider,
+                        apiKeyProvider,
+                        synthesisProfile,
+                    ),
                 player = AudioTrackTtsPlayer(context.applicationContext),
             )
 

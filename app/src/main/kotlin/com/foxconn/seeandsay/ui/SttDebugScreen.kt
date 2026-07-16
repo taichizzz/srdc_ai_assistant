@@ -43,6 +43,7 @@ import com.foxconn.seeandsay.R
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
  * through the same final-result reducer as production cloud STT.
  * @param onTtsSpeak invoked with DEBUG text to pass to the injected provider-neutral TtsClient.
+ * @param onDebugTtsModelSelected invoked to select the cloud model for the next DEBUG Speak.
  * @param onTtsStop invoked to cancel the active standalone DEBUG TTS request.
  * @return This composable emits UI and has no return value.
  *
@@ -65,6 +66,7 @@ fun SttDebugScreen(
     onOpenSettings: () -> Unit,
     onTypedTranscriptSubmitted: (String) -> Unit,
     onTtsSpeak: (String) -> Unit,
+    onDebugTtsModelSelected: (DebugTtsModel) -> Unit,
     onTtsStop: () -> Unit,
 ) {
     var typedTranscript by rememberSaveable { mutableStateOf("") }
@@ -406,8 +408,50 @@ fun SttDebugScreen(
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
+                text = stringResource(R.string.tts_model_selector),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            DebugTtsModel.entries.forEach { model ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RadioButton(
+                        selected = ttsState.selectedDebugModel == model,
+                        onClick = { onDebugTtsModelSelected(model) },
+                        enabled = !isAudioBusy,
+                    )
+                    Text(
+                        text = model.displayName,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+            }
+            Text(
+                text =
+                    stringResource(
+                        R.string.tts_selected_model,
+                        ttsState.selectedDebugModel.model,
+                        ttsState.selectedDebugModel.speaker
+                            ?: stringResource(R.string.tts_classic_voice),
+                    ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
                 text = stringResource(R.string.tts_status, ttsState.status.name),
                 style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text =
+                    stringResource(
+                        R.string.tts_playback_engine,
+                        ttsState.playbackEngine.displayName,
+                    ),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text = stringResource(R.string.tts_playback_engine_log_note),
+                style = MaterialTheme.typography.bodySmall,
             )
             Text(
                 text =

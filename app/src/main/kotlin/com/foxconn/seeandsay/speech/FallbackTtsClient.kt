@@ -3,12 +3,16 @@ package com.foxconn.seeandsay.speech
 import com.foxconn.seeandsay.config.FeatureFlags
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Provides cloud-first speech with an on-device fallback behind CLOUD_TTS_ENABLED.
  *
  * @param cloudClient contract-compliant cloud synthesis/playback client.
  * @param deviceClient Android on-device fallback client.
+ * @param engineReporter best-effort observer used for credential-free diagnostic logging.
  * @param isCloudEnabled flag source; production reads FeatureFlags and tests inject a constant.
  *
  * When enabled, [speak] tries cloud once and falls back only for recoverable [CloudTtsException].
@@ -18,12 +22,26 @@ import kotlinx.coroutines.CancellationException
 class FallbackTtsClient(
     private val cloudClient: TtsClient,
     private val deviceClient: TtsClient,
+    private val engineReporter: (TtsPlaybackEngine) -> Unit = {},
     private val isCloudEnabled: () -> Boolean = { FeatureFlags.CLOUD_TTS_ENABLED },
 ) : TtsClient,
     AutoCloseable {
 
     /** Thread-safe lifecycle flag preventing work after both clients are disposed. */
     private val isClosed = AtomicBoolean(false)
+
+    /** Mutable route backing state; no client, text, audio, or credential escapes through it. */
+    private val mutablePlaybackEngine = MutableStateFlow(TtsPlaybackEngine.NotUsed)
+
+    /**
+     * Exposes the active or most recently attempted cloud/device route.
+     *
+     * @return hot provider-neutral state beginning with [TtsPlaybackEngine.NotUsed].
+     *
+     * Collection is safe on any dispatcher and may be cancelled without affecting active speech.
+     * Reading performs no I/O and cannot fail; the StateFlow owns no independent coroutine.
+     */
+    val playbackEngine: StateFlow<TtsPlaybackEngine> = mutablePlaybackEngine.asStateFlow()
 
     /**
      * Speaks with cloud when enabled and falls back once to the on-device client on cloud failure.
@@ -41,16 +59,34 @@ class FallbackTtsClient(
             throw CloudTtsException(CloudTtsFailureReason.ClientClosed, CLIENT_CLOSED_MESSAGE)
         }
         if (!isCloudEnabled()) {
+            reportEngine(TtsPlaybackEngine.OnDevice)
             deviceClient.speak(text)
             return
         }
         try {
+            reportEngine(TtsPlaybackEngine.Cloud)
             cloudClient.speak(text)
         } catch (error: CancellationException) {
             throw error
         } catch (_: CloudTtsException) {
+            reportEngine(TtsPlaybackEngine.OnDevice)
             deviceClient.speak(text)
         }
+    }
+
+    /**
+     * Publishes and reports one actual route attempt without risking speech completion.
+     *
+     * @param engine Cloud or on-device route about to receive the utterance.
+     * @return This function has no return value.
+     *
+     * The synchronous operation is safe on the caller's dispatcher and performs no suspension.
+     * StateFlow publication happens before the attempt; diagnostic callback failure is swallowed so
+     * logging can never interrupt synthesis, playback, fallback, or structured cancellation.
+     */
+    private fun reportEngine(engine: TtsPlaybackEngine) {
+        mutablePlaybackEngine.value = engine
+        runCatching { engineReporter(engine) }
     }
 
     /**

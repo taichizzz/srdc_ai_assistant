@@ -4,6 +4,7 @@ import com.foxconn.seeandsay.config.AccessTokenProvider
 import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.GcpTtsConfig
+import com.foxconn.seeandsay.config.GcpTtsSynthesisProfile
 import com.google.cloud.texttospeech.v1.AudioEncoding
 import com.google.cloud.texttospeech.v1.SynthesizeSpeechRequest
 import com.google.cloud.texttospeech.v1.SynthesizeSpeechResponse
@@ -88,6 +89,37 @@ class CloudTtsSynthesizerTest {
                 assertNull(fixture.metadata.authorization)
                 assertNull(fixture.metadata.quotaProjectId)
                 assertFalse(tokenWasRequested)
+            }
+        }
+
+    /**
+     * Verifies the Gemini Flash-Lite selection carries model, Kore speaker, locale, and prompt.
+     *
+     * @return This test has no return value.
+     *
+     * The in-process fake receives one unary request and returns fixed bytes without Google or
+     * Android I/O. It fails if single-speaker Kore is incorrectly encoded as multi-speaker config,
+     * the preview model is omitted, or the existing LINEAR16/24 kHz playback contract changes.
+     */
+    @Test
+    fun geminiFlashLiteRequestCarriesModelAndKoreSingleSpeaker() =
+        runBlocking {
+            val service = SuccessfulTtsService(byteArrayOf(1, 2, 3))
+            GrpcFixture(
+                service = service,
+                synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
+            ).use { fixture ->
+                fixture.client.synthesize("已進入設定")
+                val request = service.requests.single()
+
+                assertEquals("已進入設定", request.input.text)
+                assertEquals(GcpTtsConfig.GEMINI_FLASH_LITE_PROMPT, request.input.prompt)
+                assertEquals(GcpTtsConfig.LANGUAGE_CODE, request.voice.languageCode)
+                assertEquals(GcpTtsConfig.GEMINI_FLASH_LITE_SPEAKER, request.voice.name)
+                assertEquals(GcpTtsConfig.GEMINI_FLASH_LITE_MODEL, request.voice.modelName)
+                assertFalse(request.voice.hasMultiSpeakerVoiceConfig())
+                assertEquals(AudioEncoding.LINEAR16, request.audioConfig.audioEncoding)
+                assertEquals(GcpTtsConfig.SAMPLE_RATE_HZ, request.audioConfig.sampleRateHertz)
             }
         }
 
@@ -338,6 +370,7 @@ class CloudTtsSynthesizerTest {
      * @param service fake Google TTS service installed in the in-memory server.
      * @param tokenProvider fake bearer provider; defaults to a non-secret value.
      * @param apiKeyProvider fake API-key provider; defaults to a non-secret value.
+     * @param synthesisProfile classic or Gemini-TTS request settings under test.
      *
      * Construction starts only in-process direct-executor resources and cannot access DNS, TLS,
      * Android, or Google. [close] is idempotent and bounds server shutdown to one second.
@@ -346,6 +379,7 @@ class CloudTtsSynthesizerTest {
         service: TextToSpeechGrpc.TextToSpeechImplBase,
         tokenProvider: AccessTokenProvider = AccessTokenProvider { "test-token" },
         apiKeyProvider: ApiKeyProvider = ApiKeyProvider { "test-api-key" },
+        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
     ) : AutoCloseable {
         /** Unique in-process transport name isolating this fixture from other tests. */
         private val serverName = InProcessServerBuilder.generateName()
@@ -374,6 +408,7 @@ class CloudTtsSynthesizerTest {
                 apiKeyProvider = apiKeyProvider,
                 channel = channel,
                 quotaProjectId = "test-quota-project",
+                synthesisProfile = synthesisProfile,
             )
 
         /**

@@ -1,5 +1,7 @@
 package com.foxconn.seeandsay.ui
 
+import com.foxconn.seeandsay.speech.TtsPlaybackEngine
+
 /**
  * Describes the visible lifecycle of one standalone M1.2 text-to-speech request.
  *
@@ -26,6 +28,8 @@ enum class TtsStatus {
  * @property status current standalone synthesis/playback lifecycle state.
  * @property currentText normalized text owned by the active or most recent request.
  * @property errorMessage fixed recoverable failure text, or `null` outside Error.
+ * @property selectedDebugModel cloud voice/model used by the next DEBUG Speak request.
+ * @property playbackEngine actual active/last cloud or on-device route reported by fallback.
  *
  * The value performs no I/O, throws no project-specific failure, and is safe to publish through a
  * StateFlow across coroutine contexts. It owns no job and has no cancellation behavior.
@@ -34,4 +38,6 @@ data class TtsUiState(
     val status: TtsStatus = TtsStatus.Idle,
     val currentText: String = "",
     val errorMessage: String? = null,
+    val selectedDebugModel: DebugTtsModel = DebugTtsModel.WavenetA,
+    val playbackEngine: TtsPlaybackEngine = TtsPlaybackEngine.NotUsed,
 )

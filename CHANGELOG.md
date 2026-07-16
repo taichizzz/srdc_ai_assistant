@@ -15,6 +15,51 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — DEBUG TTS model evaluation picker
+
+### Added
+
+- Added `config/GcpTtsSynthesisProfile` and centralized profiles for the existing
+  `cmn-TW-Wavenet-A` baseline and `gemini-2.5-flash-lite-preview-tts` with the single speaker
+  `Kore`, Taiwan-Mandarin style prompt, 4,000-byte Gemini text bound, and unchanged 24 kHz
+  LINEAR16 output.
+- Added provider-neutral `speech/SwitchableTtsClient.kt` so the DEBUG selector changes only the
+  next cloud utterance while preserving one shared device fallback and lifecycle cleanup.
+- Added `ui/DebugTtsModel.kt`, selected-model state, Compose radio controls, and visible
+  model/speaker details in the DEBUG text-to-speech section.
+- Added provider-neutral `TtsPlaybackEngine` route state at the fallback boundary. The DEBUG screen
+  now shows **TTS engine (active/last): Cloud/On-device**, and each attempt prints a CSV-safe
+  credential-free `TtsEngine` Logcat line (`engine=cloud` or `engine=on_device`).
+- Added focused in-process request and pure routing/ViewModel tests for Gemini model/Kore encoding,
+  single-speaker configuration, selection, and state retention.
+
+### Changed
+
+- Parameterized `CloudTtsSynthesizer` and `CloudTtsClient` with immutable non-secret synthesis
+  profiles while retaining WaveNet A as the constructor default and leaving `TtsClient` unchanged.
+- Updated `docs/demos/M1.2.md` with repeatable WaveNet-versus-Flash-Lite selection and live-device
+  comparison steps, including how cloud-to-device fallback affects acceptance evidence.
+
+### Notes
+
+- Used `VoiceSelectionParams.name = Kore` because Cloud TTS single-speaker requests encode the
+  speaker as the voice name; `speakerId` is reserved for multi-speaker configuration, which this
+  IVI assistant does not need.
+- Reused the existing Cloud TTS V1 unary endpoint, dependency, LINEAR16/WAV parser, AudioTrack,
+  audio focus, cancellation, echo exclusion, API-key-first/bearer-fallback credential precedence,
+  and device fallback. No new dependency, TTS/STT contract, VoicePipeline, bridge, decision, or
+  Accessibility change was added.
+- Flash-Lite and its `cmn-TW` language support are Preview. Live Google acceptance depends on the
+  project and credential having Gemini-TTS access plus `aiplatform.endpoints.predict`; a standard
+  API key can still be rejected even when it works for classic WaveNet, after which the existing
+  on-device fallback speaks.
+- Engine reporting occurs immediately before each actual client attempt, so a cloud rejection is
+  visibly/logically followed by On-device rather than leaving a misleading Cloud label. Logging
+  contains no text, audio, model prompt, API key, token, or authorization metadata and cannot break
+  speech if the Android logger itself fails.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 70 unit tests
+  passed, lint completed with no blocking issue, and debug/release APKs assembled successfully.
+
 ## [2026-07-16] — M1.2 Phase 5: Test and acceptance closeout
 
 ### Added

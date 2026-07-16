@@ -4,9 +4,11 @@ import com.foxconn.seeandsay.MainDispatcherRule
 import com.foxconn.seeandsay.speech.CloudTtsException
 import com.foxconn.seeandsay.speech.CloudTtsFailureReason
 import com.foxconn.seeandsay.speech.FakeTtsClient
+import com.foxconn.seeandsay.speech.TtsPlaybackEngine
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -187,5 +189,69 @@ class TtsViewModelTest {
             assertEquals(TtsStatus.Completed, viewModel.uiState.value.status)
             assertEquals("第二次", viewModel.uiState.value.currentText)
             assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies a DEBUG selection is published and delegated before the next Speak request.
+     *
+     * @return This test has no return value.
+     *
+     * The callback and fake client run on virtual Dispatchers.Main with no cloud/audio work. The
+     * test fails if Gemini selection is not retained through Speaking/Completed or is not routed
+     * exactly once before synthesis starts.
+     */
+    @Test
+    fun debugModelSelectionIsUsedByNextSpeak() =
+        runTest {
+            val selections = mutableListOf<DebugTtsModel>()
+            val client = FakeTtsClient()
+            val viewModel = TtsViewModel(client, selections::add)
+
+            viewModel.onDebugModelSelected(DebugTtsModel.GeminiFlashLiteKore)
+            assertEquals(
+                DebugTtsModel.GeminiFlashLiteKore,
+                viewModel.uiState.value.selectedDebugModel,
+            )
+            assertEquals(listOf(DebugTtsModel.GeminiFlashLiteKore), selections)
+
+            viewModel.onSpeakRequested("你好")
+            advanceUntilIdle()
+
+            assertEquals(listOf("你好"), client.requests)
+            assertEquals(TtsStatus.Completed, viewModel.uiState.value.status)
+            assertEquals(
+                DebugTtsModel.GeminiFlashLiteKore,
+                viewModel.uiState.value.selectedDebugModel,
+            )
+        }
+
+    /**
+     * Verifies fallback route changes reach the UI state used by the engine label.
+     *
+     * @return This test has no return value.
+     *
+     * A MutableStateFlow simulates cloud then device routing on virtual Dispatchers.Main. No speech,
+     * logging, Android, or network work occurs; the test fails if route collection is absent or
+     * converts a provider-neutral engine value incorrectly.
+     */
+    @Test
+    fun playbackEngineRouteIsExposedInUiState() =
+        runTest {
+            val engine = MutableStateFlow(TtsPlaybackEngine.NotUsed)
+            val viewModel =
+                TtsViewModel(
+                    ttsClient = FakeTtsClient(),
+                    playbackEngine = engine,
+                )
+            runCurrent()
+            assertEquals(TtsPlaybackEngine.NotUsed, viewModel.uiState.value.playbackEngine)
+
+            engine.value = TtsPlaybackEngine.Cloud
+            runCurrent()
+            assertEquals(TtsPlaybackEngine.Cloud, viewModel.uiState.value.playbackEngine)
+
+            engine.value = TtsPlaybackEngine.OnDevice
+            runCurrent()
+            assertEquals(TtsPlaybackEngine.OnDevice, viewModel.uiState.value.playbackEngine)
         }
 }

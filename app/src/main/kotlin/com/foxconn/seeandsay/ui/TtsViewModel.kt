@@ -4,11 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.foxconn.seeandsay.speech.TtsClient
+import com.foxconn.seeandsay.speech.TtsPlaybackEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -16,6 +18,8 @@ import kotlinx.coroutines.launch
  * Owns standalone M1.2 DEBUG TTS state and one lifecycle-scoped provider-neutral speech request.
  *
  * @param ttsClient provider-neutral implementation whose `speak` call suspends through playback.
+ * @param selectDebugModel composition-root callback selecting a provider-neutral cloud client.
+ * @param playbackEngine provider-neutral route state from the composed fallback client, when known.
  *
  * Public events are intended for Android's main thread. Work is structured under [viewModelScope];
  * a new request cancels and joins its predecessor before using the client. Stop and ViewModel
@@ -24,6 +28,8 @@ import kotlinx.coroutines.launch
  */
 class TtsViewModel(
     private val ttsClient: TtsClient,
+    private val selectDebugModel: (DebugTtsModel) -> Unit = {},
+    playbackEngine: StateFlow<TtsPlaybackEngine>? = null,
 ) : ViewModel() {
 
     /** Mutable main-confined backing state; only immutable [uiState] escapes this ViewModel. */
@@ -31,6 +37,16 @@ class TtsViewModel(
 
     /** Lifecycle-owned wrapper for the active or replacing TTS request. */
     private var speakingJob: Job? = null
+
+    init {
+        playbackEngine?.let { engineState ->
+            viewModelScope.launch {
+                engineState.collect { engine ->
+                    mutableUiState.update { it.copy(playbackEngine = engine) }
+                }
+            }
+        }
+    }
 
     /**
      * Exposes the latest standalone TTS state as a read-only lifecycle-friendly StateFlow.
@@ -41,6 +57,34 @@ class TtsViewModel(
      * stored state or active TTS request. Reading performs no I/O and cannot fail project-specifically.
      */
     val uiState: StateFlow<TtsUiState> = mutableUiState.asStateFlow()
+
+    /**
+     * Selects the cloud voice/model used by the next DEBUG Speak request.
+     *
+     * @param model current WaveNet baseline or Gemini Flash-Lite/Kore evaluation choice.
+     * @return This function has no return value.
+     *
+     * The main-thread event is ignored while Speaking so one utterance cannot change providers
+     * midway through synthesis/playback. Selection performs no cloud/audio work. Unexpected local
+     * routing failure becomes a recoverable Error; there is no coroutine or cancellation work.
+     */
+    fun onDebugModelSelected(model: DebugTtsModel) {
+        if (mutableUiState.value.status == TtsStatus.Speaking) return
+        try {
+            selectDebugModel(model)
+            mutableUiState.update {
+                it.copy(
+                    status = TtsStatus.Idle,
+                    errorMessage = null,
+                    selectedDebugModel = model,
+                )
+            }
+        } catch (_: Throwable) {
+            mutableUiState.update {
+                it.copy(status = TtsStatus.Error, errorMessage = MODEL_SELECTION_ERROR)
+            }
+        }
+    }
 
     /**
      * Starts a provider-neutral TTS request, cancelling and joining any predecessor first.
@@ -70,6 +114,8 @@ class TtsViewModel(
             TtsUiState(
                 status = TtsStatus.Speaking,
                 currentText = normalizedText,
+                selectedDebugModel = mutableUiState.value.selectedDebugModel,
+                playbackEngine = mutableUiState.value.playbackEngine,
             )
         speakingJob =
             viewModelScope.launch {
@@ -123,12 +169,16 @@ class TtsViewModel(
      * Creates TtsViewModel instances while keeping the UI typed only to [TtsClient].
      *
      * @param ttsClient provider-neutral on-device or future cloud implementation.
+     * @param selectDebugModel composition-root callback changing the selected cloud client.
+     * @param playbackEngine route state emitted by the fallback client for DEBUG display.
      *
      * Factory construction performs no synthesis/audio work and owns no coroutine. Android invokes
      * [create] on the main thread; unsupported ViewModel classes fail with IllegalArgumentException.
      */
     class Factory(
         private val ttsClient: TtsClient,
+        private val selectDebugModel: (DebugTtsModel) -> Unit = {},
+        private val playbackEngine: StateFlow<TtsPlaybackEngine>? = null,
     ) : ViewModelProvider.Factory {
 
         /**
@@ -146,7 +196,7 @@ class TtsViewModel(
             require(modelClass.isAssignableFrom(TtsViewModel::class.java)) {
                 "Unsupported ViewModel class: ${modelClass.name}"
             }
-            return TtsViewModel(ttsClient) as T
+            return TtsViewModel(ttsClient, selectDebugModel, playbackEngine) as T
         }
     }
 
@@ -156,5 +206,8 @@ class TtsViewModel(
 
         /** Fixed non-secret message for synthesis or playback failures. */
         const val SPEAK_FAILURE_ERROR = "Text-to-speech failed. Please try again."
+
+        /** Fixed recoverable message for an unexpected local model-router failure. */
+        const val MODEL_SELECTION_ERROR = "The text-to-speech model could not be selected."
     }
 }

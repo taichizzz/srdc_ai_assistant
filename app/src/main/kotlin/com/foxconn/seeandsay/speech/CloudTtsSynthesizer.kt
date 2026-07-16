@@ -5,6 +5,7 @@ import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.GcpTtsConfig
+import com.foxconn.seeandsay.config.GcpTtsSynthesisProfile
 import com.google.cloud.texttospeech.v1.AudioConfig
 import com.google.cloud.texttospeech.v1.AudioEncoding
 import com.google.cloud.texttospeech.v1.SynthesisInput
@@ -36,18 +37,20 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  * @param channel reusable managed channel; production owns one OkHttp TLS channel while tests inject
  * an in-process channel.
  * @param quotaProjectId optional non-secret quota project attached only to bearer requests.
+ * @param synthesisProfile immutable classic-voice or Gemini-TTS single-speaker request settings.
  *
- * This Phase 3 component deliberately does not implement [TtsClient]: that binding contract returns
- * only after playback, while Phase 3 stops at synthesis. Each [synthesize] call performs one unary
- * RPC and maps Google bytes/types to [SynthesizedAudio]. No Google/gRPC type escapes `speech/`.
- * Calls are safe from any coroutine context, cancellation promptly cancels the RPC, and [close]
- * releases the shared channel. Phase 4 will compose this synthesizer with playback and fallback.
+ * This component deliberately does not implement [TtsClient]: that binding contract returns only
+ * after playback, so [CloudTtsClient] composes this synthesis boundary with WAV parsing and
+ * AudioTrack. Each [synthesize] call performs one unary RPC and maps Google bytes/types to
+ * [SynthesizedAudio]. No Google/gRPC type escapes `speech/`. Calls are safe from any coroutine
+ * context, cancellation promptly cancels the RPC, and [close] releases the shared channel.
  */
 class CloudTtsSynthesizer internal constructor(
     private val accessTokenProvider: AccessTokenProvider,
     private val apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
     private val channel: ManagedChannel,
     private val quotaProjectId: String?,
+    private val synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
 ) : AutoCloseable {
 
     /** Thread-safe lifecycle flag preventing calls after shared-channel disposal. */
@@ -58,6 +61,7 @@ class CloudTtsSynthesizer internal constructor(
      *
      * @param accessTokenProvider suspend provider for a short-lived OAuth bearer token.
      * @param apiKeyProvider suspend provider for an optional debug-injected plain API key.
+     * @param synthesisProfile classic WaveNet baseline or Gemini-TTS evaluation profile.
      *
      * Construction allocates a channel without starting DNS, credential lookup, or an RPC. It is
      * synchronous and non-suspending; local channel initialization failures propagate. [close]
@@ -66,11 +70,13 @@ class CloudTtsSynthesizer internal constructor(
     constructor(
         accessTokenProvider: AccessTokenProvider,
         apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
+        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
     ) : this(
         accessTokenProvider = accessTokenProvider,
         apiKeyProvider = apiKeyProvider,
         channel = createProductionChannel(),
         quotaProjectId = GcpTtsConfig.projectId,
+        synthesisProfile = synthesisProfile,
     )
 
     /**
@@ -87,11 +93,11 @@ class CloudTtsSynthesizer internal constructor(
      */
     suspend fun synthesize(text: String): SynthesizedAudio {
         val normalizedText = text.trim()
-        validateText(normalizedText)
+        validateText(normalizedText, synthesisProfile)
         if (isClosed.get()) throw clientClosedFailure()
 
         val credential = selectCredential()
-        val request = createRequest(normalizedText)
+        val request = createRequest(normalizedText, synthesisProfile)
         return executeSynthesis(request, credential)
     }
 
@@ -348,9 +354,6 @@ class CloudTtsSynthesizer internal constructor(
         /** Bounded unary deadline preventing cloud synthesis from hanging indefinitely. */
         const val SYNTHESIS_DEADLINE_SECONDS = 15L
 
-        /** Google unary text limit measured after UTF-8 encoding. */
-        const val MAX_INPUT_BYTES = 5_000
-
         /** Fixed non-secret message for blank synthesis input. */
         const val EMPTY_TEXT_MESSAGE = "Text-to-speech text must not be empty."
 
@@ -410,17 +413,21 @@ class CloudTtsSynthesizer internal constructor(
          * Validates normalized unary input before credential or network work starts.
          *
          * @param text trimmed caller text.
+         * @param synthesisProfile selected model's explicit UTF-8 text-field limit.
          * @return This function has no return value.
-         * @throws CloudTtsException when text is blank or exceeds Google's 5,000-byte limit.
+         * @throws CloudTtsException when text is blank or exceeds the selected model's limit.
          *
          * This synchronous helper performs bounded UTF-8 encoding on the caller's thread and owns
          * no coroutine resource or cancellation cleanup.
          */
-        fun validateText(text: String) {
+        fun validateText(
+            text: String,
+            synthesisProfile: GcpTtsSynthesisProfile,
+        ) {
             if (text.isEmpty()) {
                 throw CloudTtsException(CloudTtsFailureReason.InvalidInput, EMPTY_TEXT_MESSAGE)
             }
-            if (text.toByteArray(Charsets.UTF_8).size > MAX_INPUT_BYTES) {
+            if (text.toByteArray(Charsets.UTF_8).size > synthesisProfile.maximumTextBytes) {
                 throw CloudTtsException(CloudTtsFailureReason.InvalidInput, TEXT_TOO_LONG_MESSAGE)
             }
         }
@@ -429,26 +436,40 @@ class CloudTtsSynthesizer internal constructor(
          * Creates the unary Google request from provider-neutral configuration.
          *
          * @param text validated non-blank plain text.
-         * @return request carrying cmn-TW Wavenet voice and 24 kHz LINEAR16 output settings.
+         * @param synthesisProfile selected classic or Gemini single-speaker configuration.
+         * @return request carrying the profile plus 24 kHz LINEAR16 output settings.
          *
          * This pure builder performs no I/O/suspension and owns no cancellation resource. Invalid
          * constant/enum configuration throws synchronously before the RPC starts.
          */
-        fun createRequest(text: String): SynthesizeSpeechRequest {
-            val input = SynthesisInput.newBuilder().setText(text).build()
-            val voice =
+        fun createRequest(
+            text: String,
+            synthesisProfile: GcpTtsSynthesisProfile,
+        ): SynthesizeSpeechRequest {
+            val inputBuilder = SynthesisInput.newBuilder().setText(text)
+            synthesisProfile.prompt
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let(inputBuilder::setPrompt)
+
+            val voiceBuilder =
                 VoiceSelectionParams.newBuilder()
-                    .setLanguageCode(GcpTtsConfig.LANGUAGE_CODE)
-                    .setName(GcpTtsConfig.VOICE_NAME)
-                    .build()
+                    .setLanguageCode(synthesisProfile.languageCode)
+                    .setName(synthesisProfile.voiceName)
+            // Cloud TTS uses `name` for a single Gemini speaker such as Kore. `speakerId` belongs
+            // only to the multi-speaker config and would incorrectly add dialogue semantics here.
+            synthesisProfile.modelName
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.let(voiceBuilder::setModelName)
             val audioConfig =
                 AudioConfig.newBuilder()
                     .setAudioEncoding(AudioEncoding.valueOf(GcpTtsConfig.AUDIO_ENCODING))
                     .setSampleRateHertz(GcpTtsConfig.SAMPLE_RATE_HZ)
                     .build()
             return SynthesizeSpeechRequest.newBuilder()
-                .setInput(input)
-                .setVoice(voice)
+                .setInput(inputBuilder.build())
+                .setVoice(voiceBuilder.build())
                 .setAudioConfig(audioConfig)
                 .build()
         }

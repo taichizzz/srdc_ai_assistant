@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +22,7 @@ import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.config.BuildConfigAccessTokenProvider
 import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
 import com.foxconn.seeandsay.config.GcpSttV2Config
+import com.foxconn.seeandsay.config.GcpTtsConfig
 import com.foxconn.seeandsay.speech.CloudSttClient
 import com.foxconn.seeandsay.speech.CloudSttV2Client
 import com.foxconn.seeandsay.speech.CloudTtsClient
@@ -28,6 +30,7 @@ import com.foxconn.seeandsay.speech.DebugAudioPlayer
 import com.foxconn.seeandsay.speech.DeviceTtsClient
 import com.foxconn.seeandsay.speech.FallbackTtsClient
 import com.foxconn.seeandsay.speech.MicRecorder
+import com.foxconn.seeandsay.speech.SwitchableTtsClient
 
 /**
  * Hosts the M1.1 debug UI and coordinates Android's microphone permission APIs.
@@ -85,20 +88,55 @@ class MainActivity : ComponentActivity() {
      *
      * Android creates this ViewModel lazily on the main thread. The cloud client performs no RPC
      * until Speak; the device fallback begins asynchronous engine initialization without speaking.
-     * Lifecycle disposal cancels playback and closes both clients. Cloud/device failures become
-     * recoverable ViewModel state only if fallback cannot complete.
+     * Lifecycle disposal cancels playback and closes both selectable cloud clients plus the device
+     * fallback. Cloud/device failures become recoverable ViewModel state only if fallback cannot
+     * complete.
      */
     private val ttsViewModel: TtsViewModel by viewModels {
         val accessTokenProvider = BuildConfigAccessTokenProvider()
         val apiKeyProvider = BuildConfigApiKeyProvider()
-        val cloudClient =
+        val wavenetCloudClient =
             CloudTtsClient(
                 context = applicationContext,
                 accessTokenProvider = accessTokenProvider,
                 apiKeyProvider = apiKeyProvider,
+                synthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+            )
+        val geminiFlashLiteCloudClient =
+            CloudTtsClient(
+                context = applicationContext,
+                accessTokenProvider = accessTokenProvider,
+                apiKeyProvider = apiKeyProvider,
+                synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
+            )
+        val selectableCloudClient =
+            SwitchableTtsClient(
+                initialClient = wavenetCloudClient,
+                clients = listOf(wavenetCloudClient, geminiFlashLiteCloudClient),
             )
         val deviceClient = DeviceTtsClient(applicationContext)
-        TtsViewModel.Factory(FallbackTtsClient(cloudClient, deviceClient))
+        val fallbackClient =
+            FallbackTtsClient(
+                cloudClient = selectableCloudClient,
+                deviceClient = deviceClient,
+                engineReporter = { engine ->
+                    // The route label is intentionally the only logged field: no text, model
+                    // prompt, audio, token, API key, or authorization metadata may reach Logcat.
+                    Log.i("TtsEngine", "engine=${engine.logValue}")
+                },
+            )
+        TtsViewModel.Factory(
+            ttsClient = fallbackClient,
+            selectDebugModel = { model ->
+                selectableCloudClient.select(
+                    when (model) {
+                        DebugTtsModel.WavenetA -> wavenetCloudClient
+                        DebugTtsModel.GeminiFlashLiteKore -> geminiFlashLiteCloudClient
+                    },
+                )
+            },
+            playbackEngine = fallbackClient.playbackEngine,
+        )
     }
 
     private val microphonePermissionLauncher =
@@ -165,6 +203,7 @@ class MainActivity : ComponentActivity() {
                                 ttsViewModel.onSpeakRequested(text)
                             }
                         },
+                        onDebugTtsModelSelected = ttsViewModel::onDebugModelSelected,
                         onTtsStop = {
                             if (BuildConfig.DEBUG) ttsViewModel.onStopRequested()
                         },

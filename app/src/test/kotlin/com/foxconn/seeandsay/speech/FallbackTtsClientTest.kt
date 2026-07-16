@@ -38,12 +38,24 @@ class FallbackTtsClientTest {
                     )
                 }
             val device = FakeTtsClient()
-            val client = FallbackTtsClient(cloud, device) { true }
+            val reportedEngines = mutableListOf<TtsPlaybackEngine>()
+            val client =
+                FallbackTtsClient(
+                    cloudClient = cloud,
+                    deviceClient = device,
+                    engineReporter = reportedEngines::add,
+                    isCloudEnabled = { true },
+                )
 
             client.speak("你好")
 
             assertEquals(listOf("你好"), cloud.requests)
             assertEquals(listOf("你好"), device.requests)
+            assertEquals(
+                listOf(TtsPlaybackEngine.Cloud, TtsPlaybackEngine.OnDevice),
+                reportedEngines,
+            )
+            assertEquals(TtsPlaybackEngine.OnDevice, client.playbackEngine.value)
         }
 
     /**
@@ -65,6 +77,7 @@ class FallbackTtsClientTest {
 
             assertTrue(cloud.requests.isEmpty())
             assertEquals(listOf("離線"), device.requests)
+            assertEquals(TtsPlaybackEngine.OnDevice, client.playbackEngine.value)
         }
 
     /**
@@ -103,5 +116,6 @@ class FallbackTtsClientTest {
 
             assertTrue(device.requests.isEmpty())
             assertTrue(userFailures.isEmpty())
+            assertEquals(TtsPlaybackEngine.Cloud, client.playbackEngine.value)
         }
 }
