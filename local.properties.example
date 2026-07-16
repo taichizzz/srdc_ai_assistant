@@ -25,3 +25,8 @@ GCP_STT_ACCESS_TOKEN=
 # package com.foxconn.seeandsay plus the signing certificate SHA-1. Never paste a service-account
 # JSON, private key, or other credential file here, and never commit the real value to VCS.
 GCP_STT_API_KEY=
+
+# DEBUG behavior flag: true tries Cloud TTS first and falls back to the Android device engine;
+# false skips all Cloud TTS credential/network work and uses the device engine directly.
+# Release/default builds use true. This is not a credential and must contain only true or false.
+CLOUD_TTS_ENABLED=true

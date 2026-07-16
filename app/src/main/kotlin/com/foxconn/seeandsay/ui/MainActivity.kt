@@ -23,7 +23,10 @@ import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
 import com.foxconn.seeandsay.config.GcpSttV2Config
 import com.foxconn.seeandsay.speech.CloudSttClient
 import com.foxconn.seeandsay.speech.CloudSttV2Client
+import com.foxconn.seeandsay.speech.CloudTtsClient
 import com.foxconn.seeandsay.speech.DebugAudioPlayer
+import com.foxconn.seeandsay.speech.DeviceTtsClient
+import com.foxconn.seeandsay.speech.FallbackTtsClient
 import com.foxconn.seeandsay.speech.MicRecorder
 
 /**
@@ -33,8 +36,9 @@ import com.foxconn.seeandsay.speech.MicRecorder
  * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
  * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected audio
  * components, the local-only credential-presence check, unchanged V1 production recognition, and
- * isolated V1/Chirp DEBUG comparison clients. Permission requests can be denied or suppressed by
- * Android; both outcomes become recoverable UI state rather than escaping.
+ * isolated V1/Chirp DEBUG comparison clients. A separate TtsViewModel owns cloud-first Taiwan-
+ * Mandarin TTS with on-device fallback for the DEBUG M1.2 controls. Permission requests can be
+ * denied or suppressed by Android; both outcomes become recoverable UI state rather than escaping.
  */
 class MainActivity : ComponentActivity() {
 
@@ -76,6 +80,27 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /**
+     * Owns DEBUG TTS state with lifecycle-bound cloud-first and on-device fallback clients.
+     *
+     * Android creates this ViewModel lazily on the main thread. The cloud client performs no RPC
+     * until Speak; the device fallback begins asynchronous engine initialization without speaking.
+     * Lifecycle disposal cancels playback and closes both clients. Cloud/device failures become
+     * recoverable ViewModel state only if fallback cannot complete.
+     */
+    private val ttsViewModel: TtsViewModel by viewModels {
+        val accessTokenProvider = BuildConfigAccessTokenProvider()
+        val apiKeyProvider = BuildConfigApiKeyProvider()
+        val cloudClient =
+            CloudTtsClient(
+                context = applicationContext,
+                accessTokenProvider = accessTokenProvider,
+                apiKeyProvider = apiKeyProvider,
+            )
+        val deviceClient = DeviceTtsClient(applicationContext)
+        TtsViewModel.Factory(FallbackTtsClient(cloudClient, deviceClient))
+    }
+
     private val microphonePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             // A false rationale result after a completed request means Android will not present the
@@ -93,7 +118,7 @@ class MainActivity : ComponentActivity() {
         }
 
     /**
-     * Creates the activity and installs the lifecycle-aware M1.1 Compose debug screen.
+     * Creates the activity and installs the lifecycle-aware M1.1/M1.2 Compose debug screen.
      *
      * @param savedInstanceState framework state from a prior activity instance, or `null` for a new
      * instance.
@@ -108,11 +133,20 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val uiState by sttViewModel.uiState.collectAsStateWithLifecycle()
+            val ttsUiState =
+                if (BuildConfig.DEBUG) {
+                    ttsViewModel.uiState.collectAsStateWithLifecycle().value
+                } else {
+                    // Release has no standalone TTS controls; avoiding ViewModel access also avoids
+                    // initializing an on-device engine that no release code can invoke in M1.2.
+                    TtsUiState()
+                }
 
             MaterialTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     SttDebugScreen(
                         state = uiState,
+                        ttsState = ttsUiState,
                         onStart = ::handleStartRequest,
                         onStop = sttViewModel::onStopRequested,
                         onDebugRecordAndPlayback = ::handleDebugRecordAndPlaybackRequest,
@@ -123,6 +157,17 @@ class MainActivity : ComponentActivity() {
                         onRetry = sttViewModel::onRetryRequested,
                         onOpenSettings = ::openApplicationSettings,
                         onTypedTranscriptSubmitted = sttViewModel::submitTypedTranscript,
+                        onTtsSpeak = { text ->
+                            if (
+                                BuildConfig.DEBUG &&
+                                    DebugAudioExclusionPolicy.canStartTts(uiState, ttsUiState)
+                            ) {
+                                ttsViewModel.onSpeakRequested(text)
+                            }
+                        },
+                        onTtsStop = {
+                            if (BuildConfig.DEBUG) ttsViewModel.onStopRequested()
+                        },
                     )
                 }
             }

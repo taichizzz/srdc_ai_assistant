@@ -15,6 +15,234 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — M1.2 Phase 5: Test and acceptance closeout
+
+### Added
+
+- Added one focused `TtsViewModelTest` for the only genuine matrix gap found: a new Speak request
+  cancels and joins the prior suspended utterance, starts the replacement once, prevents stale state,
+  and finishes without surfacing cancellation as Error.
+
+### Changed
+
+- Strengthened the existing ViewModel recovery test to throw the production
+  `CloudTtsException(CloudTtsFailureReason.Unavailable)` category instead of a generic exception,
+  proving typed cloud failure reaches recoverable Error without leaking provider detail.
+- Consolidated `docs/demos/M1.2.md` into the final reproducible milestone script, separating the
+  deterministic fake-based matrix from live cloud, device fallback, Stop, pitch/sample-rate, and
+  microphone/audio-focus acceptance.
+- Marked **M1.2 (TTS) complete**: cloud synthesis/playback, on-device fallback, cancellation,
+  replacement, WAV parsing, feature-flag routing, and echo-rule gates are implemented and covered.
+
+### Notes
+
+- Audited the complete TTS suite before adding tests. Success/state transitions, typed recovery,
+  Stop/cancellation, cloud/device fallback, flag-off routing, valid/extra/malformed WAV handling,
+  and echo exclusion already had focused coverage; they were not duplicated.
+- Added no production capability, dependency, vendor, contract, VoicePipeline, bridge, decision,
+  Accessibility, or STT change in this closeout phase.
+- Live Google credential acceptance, audible cloud/device voices, correct real-device pitch/speed,
+  Android audio focus/routing, and physical mic/speaker exclusion remain reproducible manual
+  acceptance steps because JVM fakes cannot prove hardware or external-service behavior.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 66 unit tests
+  passed, lint completed, and debug/release APKs assembled successfully. This closes M1.2.
+
+## [2026-07-16] — M1.2 Phase 4: Cloud playback and device fallback
+
+### Added
+
+- Added `speech/Linear16WavParser.kt`, parsing RIFF chunks rather than assuming a 44-byte header,
+  validating PCM/mono/16-bit/sample-rate metadata, handling chunk padding, and returning only the
+  copied `data` payload for playback; malformed or truncated audio fails recoverably.
+- Added `speech/CloudTtsAudioPlayer.kt` with a speech-internal player seam and Android AudioTrack
+  implementation using dynamic 24 kHz mono PCM16 configuration, static PCM writes, an event-driven
+  final-frame marker, bounded completion timeout, transient assistant audio focus, and guaranteed
+  Stop/release/focus cleanup on cancellation.
+- Added contract-compliant `speech/CloudTtsClient.kt`, composing Phase 3 synthesis, WAV parsing, and
+  PCM playback so `speak(text)` returns only after audible cloud playback completes.
+- Added `speech/FallbackTtsClient.kt`, selecting cloud first when enabled, device only when disabled,
+  and falling back once to DeviceTtsClient for typed cloud synthesis/parser/playback failures.
+- Added `config/FeatureFlags.kt` as the architecture-owned behavior flag boundary, plus a
+  `CLOUD_TTS_ENABLED` BuildConfig field and documented DEBUG `local.properties` override.
+- Added `ui/DebugAudioExclusionPolicy.kt` with pure, testable gates preventing TTS start until every
+  capture/drain/output state is released and blocking every microphone entry during Speaking.
+- Added focused `CloudTtsClientTest`, `FallbackTtsClientTest`, and
+  `DebugAudioExclusionPolicyTest` coverage for WAV-header stripping, malformed audio, cloud/device
+  routing, flag-off behavior, cancellation/Stop, and bidirectional echo exclusion.
+
+### Changed
+
+- Changed the DEBUG TTS composition in `ui/MainActivity.kt` from device-only to an owned
+  CloudTtsClient plus DeviceTtsClient behind FallbackTtsClient; release builds still do not allocate
+  the DEBUG-only ViewModel because its UI is absent.
+- Changed `ui/SttDebugScreen.kt` to use the shared exclusion policy and updated the explanation in
+  `res/values/strings.xml` to describe cloud-first/device-fallback behavior.
+- Updated `local.properties.example` and `docs/demos/M1.2.md` with flag usage, live cloud/device
+  fallback acceptance, correct-pitch/speed checks, cancellation, and echo-rule verification.
+
+### Notes
+
+- Chose RIFF chunk scanning instead of removing a fixed byte count because WAV may contain optional
+  metadata and padded chunks; only the validated `data` chunk can be interpreted as PCM samples.
+- Chose AudioTrack `MODE_STATIC` plus a final-frame marker because each bounded unary response is
+  already complete in memory and `TtsClient.speak` must suspend through actual playback without a
+  sleep-based estimate.
+- Chose `USAGE_ASSISTANT`, `CONTENT_TYPE_SPEECH`, and transient audio focus for cloud output; focus
+  is requested immediately before `play()` and abandoned in every success/failure/cancellation path.
+- Chose fallback only for typed CloudTtsException failures. Structured cancellation never triggers
+  device speech, preventing Stop from unexpectedly replaying the same utterance through fallback.
+- `CLOUD_TTS_ENABLED` defaults true; a DEBUG-only local false value bypasses credential lookup and
+  network work entirely. FeatureFlags is the sole runtime code boundary reading this behavior flag.
+- Preserved the echo rule without changing STT internals: the DEBUG UI cannot invoke TTS while STT
+  owns or is releasing audio, and cannot invoke production capture, loopback, or smoke-test controls
+  throughout the complete TTS Speaking state. M1.3 will actively stop its pipeline-owned mic before
+  integrated speech.
+- Added no VoicePipeline, bridge, decision, Accessibility, STT client/contract/session changes, or
+  TtsClient contract changes.
+- Live API-key acceptance, cloud voice output, Android audio routing/focus, correct audible pitch and
+  speed, and real on-device fallback require a networked Android device and remain manual checks.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 65 unit tests
+  passed, lint completed, and debug/release APKs assembled successfully.
+
+## [2026-07-16] — M1.2 Phase 3: Google Cloud TTS synthesis boundary
+
+### Added
+
+- Added `config/GcpTtsConfig.kt` with the non-secret V1 endpoint, `cmn-TW` language,
+  `cmn-TW-Wavenet-A` voice, LINEAR16 encoding, and 24 kHz mono PCM16 metadata.
+- Added provider-neutral `speech/SynthesizedAudio.kt` so cloud bytes carry the sample rate, channel
+  count, bit depth, and explicit LINEAR16-WAV container required by Phase 4 playback.
+- Added `speech/CloudTtsFailure.kt` with fixed recoverable categories for configuration,
+  authentication, permission, quota, network, timeout, invalid input, empty response, lifecycle,
+  and unknown failures.
+- Added `speech/CloudTtsSynthesizer.kt`, owning one reusable TLS OkHttp gRPC channel, unary
+  synthesis, API-key-first/bearer-fallback authentication, a 15-second RPC deadline, input
+  validation, cancellation-safe call bridging, provider-neutral result mapping, and disposal.
+- Added `speech/CloudTtsSynthesizerTest.kt` with an in-process fake Google service covering request
+  text/voice/format, audio response mapping, mutually exclusive credential modes, missing
+  configuration, recoverable quota status, and coroutine-to-RPC cancellation.
+
+### Changed
+
+- Added `com.google.api.grpc:grpc-google-cloud-texttospeech-v1:2.92.0` to
+  `app/build.gradle.kts`, reusing the existing gRPC 1.76.0 BOM, protobuf runtime, and Android
+  `grpc-okhttp` transport without adding Netty or Google ADC/service-account libraries.
+- Updated `docs/demos/M1.2.md` with the Phase 3 automated acceptance boundary, exact synthesis
+  settings, credential assumptions, and Phase 4 live/playback responsibilities.
+
+### Notes
+
+- Kept the binding `TtsClient.speak(text): Unit` contract unchanged. With playback explicitly out of
+  Phase 3, the approved design exposes synthesis through `CloudTtsSynthesizer`; Phase 4 will compose
+  it with `AudioTrack` and device fallback to create a contract-compliant `CloudTtsClient` that
+  returns only after playback completes.
+- Chose unary `SynthesizeSpeech` because this milestone synthesizes one bounded utterance at a time
+  and does not require streaming text or audio.
+- Chose the documented `cmn-TW-Wavenet-A` Taiwan-Mandarin voice for a stable premium default; voice
+  changes remain centralized in `GcpTtsConfig`.
+- Chose LINEAR16 at 24 kHz for lossless speech and straightforward Android PCM playback. Google unary
+  LINEAR16 includes a WAV header, so the provider-neutral format explicitly says `Linear16Wav` and
+  Phase 4 must parse the WAV data chunk before sending samples to `AudioTrack`.
+- Reused M1.1 credential precedence: a non-blank API key is sent alone as `x-goog-api-key`; otherwise
+  a bearer token is sent as Authorization with optional non-secret quota-project attribution.
+- Added no playback, DEBUG/production wiring, fallback selection, VoicePipeline, bridge, decision,
+  Accessibility, STT changes, or `TtsClient` contract changes.
+- Live Google credential acceptance, returned voice audio, WAV parsing, audible playback, and device
+  fallback remain Phase 4 acceptance work requiring network and an Android audio device.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 57 unit tests
+  passed, lint completed, and debug/release APKs assembled. Gradle dependency insight found no
+  `grpc-netty` artifact in `debugRuntimeClasspath`.
+
+## [2026-07-16] — M1.2 Phase 2: On-device Taiwan-Mandarin speech
+
+### Added
+
+- Added `speech/DeviceTtsClient.kt`, implementing the unchanged provider-neutral `TtsClient`
+  contract with Android `TextToSpeech`, `Locale.TAIWAN`, transient audio-focus ownership,
+  suspend-until-playback-completes behavior, bounded asynchronous initialization, typed recoverable
+  failures, cancellation-safe Stop, and lifecycle disposal.
+- Added a speech-internal `DeviceTtsEngine` boundary so Android callbacks remain inside `speech/`
+  while pure JVM tests can deterministically drive initialization and utterance completion.
+- Added `speech/DeviceTtsClientTest.kt` coverage proving completion resumes `speak`, playback errors
+  remain recoverable, cancellation stops playback without becoming a user error, and missing zh-TW
+  data is rejected before a speak request.
+
+### Changed
+
+- Replaced the Phase 1 silent placeholder in `ui/MainActivity.kt` with `DeviceTtsClient`; DEBUG Speak
+  now uses the installed on-device engine, while release composition does not initialize DEBUG-only
+  TTS resources.
+- Changed `ui/TtsViewModel.kt` lifecycle cleanup to cancel active speech and close AutoCloseable TTS
+  clients, ensuring Android `TextToSpeech.shutdown()` runs when the ViewModel is cleared.
+- Updated `ui/SttDebugScreen.kt`, `res/values/strings.xml`, and `docs/demos/M1.2.md` for real device
+  Speak/Stop verification with the exact utterance `「你好，我是 IVI AI 助理」`.
+- Removed the temporary `SilentPlaceholderTtsClient`; no fabricated or silent playback path remains.
+
+### Notes
+
+- Chose `Locale.TAIWAN` (`zh-TW`) because the milestone targets Taiwan Mandarin; Android's
+  `LANG_MISSING_DATA` and `LANG_NOT_SUPPORTED` results map to distinct recoverable failures.
+- Chose unique opaque utterance IDs plus `UtteranceProgressListener.onDone` as the completion
+  boundary because `TtsClient.speak` must not return merely when Android accepts the request.
+- Bounded asynchronous engine initialization at 10 seconds so a broken engine callback cannot leave
+  the UI in Speaking indefinitely.
+- Serialized requests with a coroutine Mutex and Android `QUEUE_FLUSH` because this DEBUG harness
+  owns one utterance at a time; cancellation removes callback ownership and calls `stop()` promptly.
+- Preserved the echo rule by keeping TTS Speak mutually exclusive with all existing STT microphone
+  and playback activity in the DEBUG screen and requesting transient Android audio focus before
+  speech; Stop/cancellation releases focus before controls are usable.
+- Added no Cloud TTS, VoicePipeline, bridge, decision, Accessibility, STT contract, or STT production
+  changes. Cloud TTS and credential reuse remain Phase 3 work.
+- Audible output and installed Taiwan-Mandarin voice availability require an Android device or
+  emulator; pure JVM tests intentionally use a fake engine and cannot verify sound or routing.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 52 unit tests
+  passed, debug/release APKs assembled, and Android lint completed without a blocking issue.
+
+## [2026-07-16] — M1.2 Phase 1: TTS contract and DEBUG state harness
+
+### Added
+
+- Added provider-neutral `speech/TtsClient.kt` with the binding suspend-until-playback-completes
+  contract and cancellation/failure expectations, without Google or audio SDK types.
+- Added `speech/SilentPlaceholderTtsClient.kt`, a clearly labeled temporary implementation that
+  produces no audio and exposes a one-second cancellable state-verification interval only.
+- Added `ui/TtsUiState.kt` with explicit Idle, Speaking, Completed, and Error states plus current
+  text and recoverable error state.
+- Added `ui/TtsViewModel.kt` with provider-neutral client injection, lifecycle-scoped replacement,
+  Speak/Stop cancellation, fixed non-secret failure mapping, and a Factory composition boundary.
+- Added DEBUG-only text, Speak, Stop, current-text, status, and error controls to
+  `ui/SttDebugScreen.kt`, composed from a separate TtsViewModel in `ui/MainActivity.kt`.
+- Added test-only `speech/FakeTtsClient.kt` and three focused `ui/TtsViewModelTest.kt` scenarios for
+  Speaking → Completed, cancellation → Idle, and recoverable failure → successful retry.
+- Added `docs/demos/M1.2.md` with exact Phase 1 automated and DEBUG UI acceptance steps.
+
+### Changed
+
+- Changed the shared DEBUG screen to disable STT/microphone controls while TTS is Speaking and to
+  disable TTS Speak while microphone, cloud STT, loopback playback, or transition work is active.
+  STT production clients, contracts, reducers, and session code remain unchanged.
+- Added Phase 1 TTS strings that explicitly state the placeholder produces no audio.
+
+### Notes
+
+- Kept standalone TTS in a separate TtsViewModel rather than expanding SttViewModel because M1.2
+  state and cancellation can evolve without risking the completed production STT reducer/session.
+- Chose a one-second cancellable placeholder interval so a tester can observe Speaking and exercise
+  Stop; it is a coroutine delay for state verification, not simulated playback or an audio claim.
+- Cancelled a predecessor synchronously before the replacement wrapper joins it because an immediate
+  Stop must never leave the older client request running.
+- Kept TtsClient's single `speak(text)` contract unchanged from architecture; concrete clients must
+  suspend through real playback and respond promptly to cancellation in Phases 2 and 3.
+- Cloud TTS authentication will reuse the existing provider-neutral ApiKeyProvider /
+  AccessTokenProvider plumbing. Per project direction, the company API key is assumed to work for
+  Cloud TTS unlike STT V2; Phase 1 makes no cloud call, so this remains a Phase 3 live checkpoint.
+- Added no DeviceTtsClient, CloudTtsClient, Google TTS dependency, audio playback, VoicePipeline,
+  bridge, decision, Accessibility, or production TTS integration.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 48 unit tests
+  passed, debug/release APKs assembled, and Android lint completed without a blocking issue.
+- Real audible speech, Android audio focus/routing, device-engine availability, and Cloud TTS
+  credential/API acceptance remain intentionally unverifiable until Phases 2 and 3.
+
 ## [2026-07-16] — V2 global endpoint correction
 
 ### Fixed

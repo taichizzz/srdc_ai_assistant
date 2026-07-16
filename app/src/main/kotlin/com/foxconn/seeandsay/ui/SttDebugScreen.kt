@@ -28,9 +28,10 @@ import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.R
 
 /**
- * Renders the minimal M1.1 push-to-talk and typed-transcript debug interface.
+ * Renders the M1.1 speech-input and DEBUG M1.2 text-to-speech verification interface.
  *
  * @param state immutable ViewModel state to display.
+ * @param ttsState immutable standalone DEBUG TTS state to display.
  * @param onStart invoked when the user requests production microphone/cloud recognition.
  * @param onStop invoked when the user requests microphone release and final-result draining.
  * @param onDebugRecordAndPlayback invoked to start debug recording or stop it and play retained PCM.
@@ -41,6 +42,8 @@ import com.foxconn.seeandsay.R
  * @param onOpenSettings invoked when permanent permission denial requires Android Settings.
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
  * through the same final-result reducer as production cloud STT.
+ * @param onTtsSpeak invoked with DEBUG text to pass to the injected provider-neutral TtsClient.
+ * @param onTtsStop invoked to cancel the active standalone DEBUG TTS request.
  * @return This composable emits UI and has no return value.
  *
  * Composition and callbacks run on Android's main thread. The composable launches no coroutine,
@@ -51,6 +54,7 @@ import com.foxconn.seeandsay.R
 @Composable
 fun SttDebugScreen(
     state: SttUiState,
+    ttsState: TtsUiState,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onDebugRecordAndPlayback: () -> Unit,
@@ -60,20 +64,19 @@ fun SttDebugScreen(
     onRetry: () -> Unit,
     onOpenSettings: () -> Unit,
     onTypedTranscriptSubmitted: (String) -> Unit,
+    onTtsSpeak: (String) -> Unit,
+    onTtsStop: () -> Unit,
 ) {
     var typedTranscript by rememberSaveable { mutableStateOf("") }
+    var ttsText by rememberSaveable { mutableStateOf("") }
+    val isTtsSpeaking = DebugAudioExclusionPolicy.isTtsSpeaking(ttsState)
     val isSessionActive =
         !state.isDebugRecording &&
             !state.isCloudSttSmokeTestRunning &&
             (state.status == SttStatus.Connecting || state.status == SttStatus.Listening)
     val isTransitioning =
         state.status == SttStatus.RequestingPermission || state.status == SttStatus.Stopping
-    val isAudioBusy =
-        isSessionActive ||
-            state.isDebugRecording ||
-            state.isDebugPlaybackActive ||
-            state.isCloudSttSmokeTestRunning ||
-            isTransitioning
+    val isAudioBusy = !DebugAudioExclusionPolicy.canStartTts(state, ttsState)
     val permissionLabel =
         when (state.microphonePermission) {
             MicrophonePermissionStatus.NotRequested ->
@@ -123,7 +126,8 @@ fun SttDebugScreen(
                 !isTransitioning &&
                     !state.isDebugRecording &&
                     !state.isDebugPlaybackActive &&
-                    !state.isCloudSttSmokeTestRunning,
+                    !state.isCloudSttSmokeTestRunning &&
+                    !isTtsSpeaking,
         ) {
             Text(
                 text =
@@ -284,6 +288,7 @@ fun SttDebugScreen(
                     !isTransitioning &&
                         !state.isDebugRecording &&
                         !state.isDebugPlaybackActive &&
+                        !isTtsSpeaking &&
                         (!isSessionActive || state.isCloudSttSmokeTestRunning),
             ) {
                 Text(
@@ -330,6 +335,7 @@ fun SttDebugScreen(
                 enabled =
                     !state.isDebugPlaybackActive &&
                         !state.isCloudSttSmokeTestRunning &&
+                        !isTtsSpeaking &&
                         !isTransitioning &&
                         (!isSessionActive || state.isDebugRecording),
             ) {
@@ -389,6 +395,60 @@ fun SttDebugScreen(
             Text(stringResource(R.string.submit_transcript))
         }
 
+        if (BuildConfig.DEBUG) {
+            HorizontalDivider()
+            Text(
+                text = stringResource(R.string.tts_debug_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = stringResource(R.string.tts_cloud_fallback_explanation),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(R.string.tts_status, ttsState.status.name),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text =
+                    stringResource(
+                        R.string.tts_current_text,
+                        ttsState.currentText.ifBlank {
+                            stringResource(R.string.tts_no_current_text)
+                        },
+                    ),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            OutlinedTextField(
+                value = ttsText,
+                onValueChange = { ttsText = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(stringResource(R.string.tts_text_label)) },
+                singleLine = true,
+                enabled = !isAudioBusy,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = { onTtsSpeak(ttsText) },
+                    enabled = ttsText.isNotBlank() && !isAudioBusy,
+                ) {
+                    Text(stringResource(R.string.tts_speak))
+                }
+                OutlinedButton(
+                    onClick = onTtsStop,
+                    enabled = isTtsSpeaking,
+                ) {
+                    Text(stringResource(R.string.tts_stop))
+                }
+            }
+            ttsState.errorMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
         state.errorMessage?.let { errorMessage ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
@@ -414,6 +474,7 @@ fun SttDebugScreen(
                     }
                 }
             }
+
         }
 
         if (state.microphonePermission == MicrophonePermissionStatus.Denied) {

@@ -17,6 +17,13 @@ val localProperties =
 val debugGcpSttAccessToken = localProperties.getProperty("GCP_STT_ACCESS_TOKEN").orEmpty()
 val debugGcpSttApiKey = localProperties.getProperty("GCP_STT_API_KEY").orEmpty()
 val debugGcpProjectId = localProperties.getProperty("GCP_STT_PROJECT_ID").orEmpty()
+/** DEBUG cloud-first TTS override; absent or malformed local values retain the default true. */
+val debugCloudTtsEnabled =
+    localProperties
+        .getProperty("CLOUD_TTS_ENABLED")
+        ?.trim()
+        ?.toBooleanStrictOrNull()
+        ?: true
 // Keep the region developer-selectable because Chirp availability changes independently of code.
 val debugGcpSttLocation =
     localProperties
@@ -57,6 +64,7 @@ android {
         buildConfigField("String", "GCP_STT_API_KEY", "\"\"")
         buildConfigField("String", "GCP_STT_PROJECT_ID", "\"\"")
         buildConfigField("String", "GCP_STT_LOCATION", "\"\"")
+        buildConfigField("boolean", "CLOUD_TTS_ENABLED", "true")
     }
 
     buildTypes {
@@ -81,6 +89,7 @@ android {
                 "GCP_STT_LOCATION",
                 debugGcpSttLocation.asBuildConfigStringLiteral(),
             )
+            buildConfigField("boolean", "CLOUD_TTS_ENABLED", debugCloudTtsEnabled.toString())
         }
         release {
             isMinifyEnabled = false
@@ -134,6 +143,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.api.grpc:grpc-google-cloud-speech-v1:4.74.0")
     implementation("com.google.api.grpc:grpc-google-cloud-speech-v2:4.74.0")
+    implementation("com.google.api.grpc:grpc-google-cloud-texttospeech-v1:2.92.0")
     implementation("com.google.protobuf:protobuf-java:3.25.8")
     implementation("io.grpc:grpc-okhttp")
 

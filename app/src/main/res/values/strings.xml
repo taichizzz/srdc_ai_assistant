@@ -47,6 +47,14 @@
     <string name="debug_playing">Playing captured PCM — microphone controls are disabled</string>
     <string name="debug_record_and_play">Record &amp; Play Back (DEBUG)</string>
     <string name="debug_stop_and_play">Stop &amp; Play Back</string>
+    <string name="tts_debug_title">DEBUG text-to-speech</string>
+    <string name="tts_cloud_fallback_explanation">Uses Cloud TTS first when CLOUD_TTS_ENABLED is true, then falls back to the installed Taiwan-Mandarin device engine.</string>
+    <string name="tts_status">TTS status: %1$s</string>
+    <string name="tts_current_text">Current TTS text: %1$s</string>
+    <string name="tts_no_current_text">None</string>
+    <string name="tts_text_label">Text to speak</string>
+    <string name="tts_speak">Speak</string>
+    <string name="tts_stop">Stop</string>
     <string name="partial_transcript_label">Current partial transcript</string>
     <string name="no_partial_transcript">No partial transcript</string>
     <string name="final_transcript_label">Accumulated final transcript</string>
