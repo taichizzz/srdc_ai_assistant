@@ -4,12 +4,14 @@ package com.foxconn.seeandsay.pipeline
  * Converts one final speech transcript into assistant reply text.
  *
  * Implementations must always return non-blank text and must not perform speech recognition,
- * synthesis, UI actions, network access, or other side effects. A future LM-backed implementation
- * may implement this contract behind `LM_ENABLED`; the deterministic rule engine remains the
- * default while that flag is false.
+ * synthesis, UI actions, network access, or persistent side effects. An implementation may retain
+ * bounded process-local conversation state for deterministic features such as repeat/cancel. A
+ * future LM-backed implementation may implement this contract behind `LM_ENABLED`; the local rule
+ * engine remains the default while that flag is false.
  *
- * Implementations are synchronous and may be called from any dispatcher. The contract creates no
- * coroutine, has no cancellation behavior, and defines no recoverable domain exception.
+ * Implementations are synchronous, thread-safe, and may be called from any dispatcher. The
+ * contract creates no coroutine, has no cancellation behavior, and defines no recoverable domain
+ * exception.
  */
 interface ReplyEngine {
 

@@ -15,6 +15,45 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-17] — M1.3 amendment: contextual local replies and memory
+
+### Added
+
+- Added `pipeline/LocalReplyIntent.kt`, a normalized deterministic classifier for greeting,
+  identity, help, thanks, repeat, conversational cancel, and simple open/play target requests with
+  polite-prefix synonyms and an explicit missing-target result.
+- Added `pipeline/ConversationMemory.kt` with a thread-safe, 500-character-bounded in-process
+  snapshot of the last transcript, reply, requested target, and last explicitly verified action.
+- Added focused pure-JVM coverage for intent synonyms, target extraction, clarification, helpful
+  fallback, repeat/no-history, cancel/no-pending-target, memory bounds, and explicit verified-action
+  recording in `pipeline/RuleBasedReplyEngineTest.kt`.
+
+### Changed
+
+- Changed `pipeline/RuleBasedReplyEngine.kt` from two exact rules plus a dead-end fallback to a
+  serialized contextual local turn: common commands receive useful replies, `再說一次` repeats the
+  prior reply, `取消` clears the remembered target, and unmatched text points users to `幫助`.
+- Changed parsed target replies to acknowledge intent while explicitly stating that screen operation
+  is not connected yet; the rule engine never fabricates an action before M2.2/M2.3.
+- Updated the `ReplyEngine` documentation to permit bounded, non-persistent local context without
+  changing its provider-neutral signature or adding Android/network behavior.
+- Updated `docs/ARCHITECTURE.md` and `docs/demos/M1.3.md` with the exact memory lifecycle, repeat and
+  cancel semantics, capability boundary, typed-input acceptance steps, and new fallback text.
+
+### Notes
+
+- Chose explicit local intent types instead of substring-only response rules so polite synonyms and
+  targets remain testable while unrelated transcripts cannot accidentally match a command.
+- Kept memory process-local, synchronized, and bounded to avoid storing conversation history,
+  credentials, or audio; app process recreation intentionally clears it.
+- Reserved `lastSuccessfulAction` for an explicit post-verification update. M1.3 records requested
+  targets only because claiming screen success before M2.2/M2.3 would violate the architecture.
+- Kept `ReplyEngine.replyTo(String): String` unchanged so a future LM-backed implementation can
+  still replace the deterministic engine behind `LM_ENABLED` without reworking VoicePipeline.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 89 unit tests
+  passed with zero failures/skips, lint completed with no blocking issue, and both APK variants
+  assembled successfully.
+
 ## [2026-07-17] — M1.3 amendment: provider-final automatic endpointing
 
 ### Added
