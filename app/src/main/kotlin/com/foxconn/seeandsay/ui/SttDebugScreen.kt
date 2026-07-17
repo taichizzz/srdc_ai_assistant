@@ -44,6 +44,8 @@ import com.foxconn.seeandsay.R
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
  * through the same final-result reducer as production cloud STT.
  * @param onVoiceLoopEnabledChanged changes automatic post-transcript reply/TTS for later sessions.
+ * @param onVoiceLoopTtsModelSelected selects the cloud model for the next automatic main-pipeline
+ * reply without changing an in-flight utterance.
  * @param onTtsSpeak invoked with DEBUG text to pass to the injected provider-neutral TtsClient.
  * @param onDebugTtsModelSelected invoked to select the cloud model for the next DEBUG Speak.
  * @param onTtsStop invoked to cancel the active standalone DEBUG TTS request.
@@ -68,8 +70,9 @@ fun SttDebugScreen(
     onOpenSettings: () -> Unit,
     onTypedTranscriptSubmitted: (String) -> Unit,
     onVoiceLoopEnabledChanged: (Boolean) -> Unit,
+    onVoiceLoopTtsModelSelected: (TtsModelOption) -> Unit,
     onTtsSpeak: (String) -> Unit,
-    onDebugTtsModelSelected: (DebugTtsModel) -> Unit,
+    onDebugTtsModelSelected: (TtsModelOption) -> Unit,
     onTtsStop: () -> Unit,
 ) {
     var typedTranscript by rememberSaveable { mutableStateOf("") }
@@ -218,6 +221,40 @@ fun SttDebugScreen(
             }
             Text(
                 text = stringResource(R.string.voice_loop_toggle_explanation),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(R.string.voice_loop_tts_model_selector),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            TtsModelOption.entries.forEach { model ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RadioButton(
+                        selected = state.selectedVoiceLoopTtsModel == model,
+                        onClick = { onVoiceLoopTtsModelSelected(model) },
+                        enabled = !isAudioBusy,
+                    )
+                    Text(
+                        text = model.displayName,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+            }
+            Text(
+                text =
+                    stringResource(
+                        R.string.voice_loop_tts_model_selected,
+                        state.selectedVoiceLoopTtsModel.model,
+                        state.selectedVoiceLoopTtsModel.speaker
+                            ?: stringResource(R.string.tts_classic_voice),
+                    ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(R.string.voice_loop_tts_model_explanation),
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -449,7 +486,7 @@ fun SttDebugScreen(
                 text = stringResource(R.string.tts_model_selector),
                 style = MaterialTheme.typography.labelLarge,
             )
-            DebugTtsModel.entries.forEach { model ->
+            TtsModelOption.entries.forEach { model ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

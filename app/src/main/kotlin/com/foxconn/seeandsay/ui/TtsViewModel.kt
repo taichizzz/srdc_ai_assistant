@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
  */
 class TtsViewModel(
     private val ttsClient: TtsClient,
-    private val selectDebugModel: (DebugTtsModel) -> Unit = {},
+    private val selectDebugModel: (TtsModelOption) -> Unit = {},
     playbackEngine: StateFlow<TtsPlaybackEngine>? = null,
 ) : ViewModel() {
 
@@ -61,14 +61,14 @@ class TtsViewModel(
     /**
      * Selects the cloud voice/model used by the next DEBUG Speak request.
      *
-     * @param model current WaveNet baseline or Gemini Flash-Lite/Kore evaluation choice.
+     * @param model current WaveNet baseline or configured Gemini/Kore evaluation choice.
      * @return This function has no return value.
      *
      * The main-thread event is ignored while Speaking so one utterance cannot change providers
      * midway through synthesis/playback. Selection performs no cloud/audio work. Unexpected local
      * routing failure becomes a recoverable Error; there is no coroutine or cancellation work.
      */
-    fun onDebugModelSelected(model: DebugTtsModel) {
+    fun onDebugModelSelected(model: TtsModelOption) {
         if (mutableUiState.value.status == TtsStatus.Speaking) return
         try {
             selectDebugModel(model)
@@ -177,7 +177,7 @@ class TtsViewModel(
      */
     class Factory(
         private val ttsClient: TtsClient,
-        private val selectDebugModel: (DebugTtsModel) -> Unit = {},
+        private val selectDebugModel: (TtsModelOption) -> Unit = {},
         private val playbackEngine: StateFlow<TtsPlaybackEngine>? = null,
     ) : ViewModelProvider.Factory {
 

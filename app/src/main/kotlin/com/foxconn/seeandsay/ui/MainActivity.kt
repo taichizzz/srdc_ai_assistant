@@ -74,15 +74,34 @@ class MainActivity : ComponentActivity() {
             } else {
                 cloudSttClient
             }
+        val productionWavenetCloudClient =
+            CloudTtsClient(
+                context = applicationContext,
+                accessTokenProvider = accessTokenProvider,
+                apiKeyProvider = apiKeyProvider,
+                synthesisProfile = GcpTtsConfig.WAVENET_PROFILE,
+            )
+        val productionGeminiCloudClient =
+            if (BuildConfig.DEBUG) {
+                CloudTtsClient(
+                    context = applicationContext,
+                    accessTokenProvider = accessTokenProvider,
+                    apiKeyProvider = apiKeyProvider,
+                    synthesisProfile = GcpTtsConfig.GEMINI_PROFILE,
+                )
+            } else {
+                // Release exposes no evaluation selector and therefore owns no unused Gemini
+                // channel; the main pipeline remains on its stable WaveNet default.
+                productionWavenetCloudClient
+            }
+        val selectableProductionCloudClient =
+            SwitchableTtsClient(
+                initialClient = productionWavenetCloudClient,
+                clients = listOf(productionWavenetCloudClient, productionGeminiCloudClient),
+            )
         val productionVoiceTtsClient =
             FallbackTtsClient(
-                cloudClient =
-                    CloudTtsClient(
-                        context = applicationContext,
-                        accessTokenProvider = accessTokenProvider,
-                        apiKeyProvider = apiKeyProvider,
-                        synthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
-                    ),
+                cloudClient = selectableProductionCloudClient,
                 deviceClient = DeviceTtsClient(applicationContext),
                 engineReporter = { engine ->
                     // Production loop diagnostics expose only the selected route, never reply text,
@@ -104,6 +123,17 @@ class MainActivity : ComponentActivity() {
                     replyEngine = RuleBasedReplyEngine(),
                     ttsClient = productionVoiceTtsClient,
                 ),
+            selectVoiceLoopTtsModel = { model ->
+                selectableProductionCloudClient.select(
+                    when (model) {
+                        TtsModelOption.WaveNet -> productionWavenetCloudClient
+                        TtsModelOption.Gemini -> productionGeminiCloudClient
+                    },
+                )
+                // Selection diagnostics contain only a stable model category, never credentials,
+                // prompt text, user text, authorization metadata, or synthesized audio.
+                Log.i("TtsModel", "pipeline_model=${model.logValue}")
+            },
         )
     }
 
@@ -124,19 +154,19 @@ class MainActivity : ComponentActivity() {
                 context = applicationContext,
                 accessTokenProvider = accessTokenProvider,
                 apiKeyProvider = apiKeyProvider,
-                synthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+                synthesisProfile = GcpTtsConfig.WAVENET_PROFILE,
             )
-        val geminiFlashLiteCloudClient =
+        val geminiCloudClient =
             CloudTtsClient(
                 context = applicationContext,
                 accessTokenProvider = accessTokenProvider,
                 apiKeyProvider = apiKeyProvider,
-                synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
+                synthesisProfile = GcpTtsConfig.GEMINI_PROFILE,
             )
         val selectableCloudClient =
             SwitchableTtsClient(
                 initialClient = wavenetCloudClient,
-                clients = listOf(wavenetCloudClient, geminiFlashLiteCloudClient),
+                clients = listOf(wavenetCloudClient, geminiCloudClient),
             )
         val deviceClient = DeviceTtsClient(applicationContext)
         val fallbackClient =
@@ -154,8 +184,8 @@ class MainActivity : ComponentActivity() {
             selectDebugModel = { model ->
                 selectableCloudClient.select(
                     when (model) {
-                        DebugTtsModel.WavenetA -> wavenetCloudClient
-                        DebugTtsModel.GeminiFlashLiteKore -> geminiFlashLiteCloudClient
+                        TtsModelOption.WaveNet -> wavenetCloudClient
+                        TtsModelOption.Gemini -> geminiCloudClient
                     },
                 )
             },
@@ -221,6 +251,8 @@ class MainActivity : ComponentActivity() {
                         onTypedTranscriptSubmitted = sttViewModel::submitTypedTranscript,
                         onVoiceLoopEnabledChanged =
                             sttViewModel::onVoiceLoopEnabledChanged,
+                        onVoiceLoopTtsModelSelected =
+                            sttViewModel::onVoiceLoopTtsModelSelected,
                         onTtsSpeak = { text ->
                             if (
                                 BuildConfig.DEBUG &&

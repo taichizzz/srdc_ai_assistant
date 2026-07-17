@@ -77,7 +77,7 @@ class CloudTtsSynthesizerTest {
 
                 assertEquals("你好", request.input.text)
                 assertEquals(GcpTtsConfig.LANGUAGE_CODE, request.voice.languageCode)
-                assertEquals(GcpTtsConfig.VOICE_NAME, request.voice.name)
+                assertEquals(GcpTtsConfig.WAVENET_VOICE_NAME, request.voice.name)
                 assertEquals(AudioEncoding.LINEAR16, request.audioConfig.audioEncoding)
                 assertEquals(GcpTtsConfig.SAMPLE_RATE_HZ, request.audioConfig.sampleRateHertz)
                 assertArrayEquals(expectedBytes, audio.bytes)
@@ -103,23 +103,23 @@ class CloudTtsSynthesizerTest {
      * bearer token, or both credentials are sent.
      */
     @Test
-    fun geminiFlashLiteRequestUsesModelKoreAndBearerPrecedence() =
+    fun geminiRequestUsesConfiguredModelKoreAndBearerPrecedence() =
         runBlocking {
             val service = SuccessfulTtsService(byteArrayOf(1, 2, 3))
             GrpcFixture(
                 service = service,
                 tokenProvider = AccessTokenProvider { "gemini-bearer-token" },
                 apiKeyProvider = ApiKeyProvider { "retained-api-key" },
-                synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
+                synthesisProfile = GcpTtsConfig.GEMINI_PROFILE,
             ).use { fixture ->
                 fixture.client.synthesize("已進入設定")
                 val request = service.requests.single()
 
                 assertEquals("已進入設定", request.input.text)
-                assertEquals(GcpTtsConfig.GEMINI_FLASH_LITE_PROMPT, request.input.prompt)
+                assertEquals(GcpTtsConfig.GEMINI_STYLE_PROMPT, request.input.prompt)
                 assertEquals(GcpTtsConfig.LANGUAGE_CODE, request.voice.languageCode)
-                assertEquals(GcpTtsConfig.GEMINI_FLASH_LITE_SPEAKER, request.voice.name)
-                assertEquals(GcpTtsConfig.GEMINI_FLASH_LITE_MODEL, request.voice.modelName)
+                assertEquals(GcpTtsConfig.GEMINI_SPEAKER_NAME, request.voice.name)
+                assertEquals(GcpTtsConfig.GEMINI_MODEL_NAME, request.voice.modelName)
                 assertFalse(request.voice.hasMultiSpeakerVoiceConfig())
                 assertEquals(AudioEncoding.LINEAR16, request.audioConfig.audioEncoding)
                 assertEquals(GcpTtsConfig.SAMPLE_RATE_HZ, request.audioConfig.sampleRateHertz)
@@ -150,7 +150,7 @@ class CloudTtsSynthesizerTest {
                 service = service,
                 tokenProvider = missingToken,
                 apiKeyProvider = ApiKeyProvider { "gemini-fallback-key" },
-                synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
+                synthesisProfile = GcpTtsConfig.GEMINI_PROFILE,
             ).use { fixture ->
                 fixture.client.synthesize("你好")
 
@@ -416,7 +416,7 @@ class CloudTtsSynthesizerTest {
         service: TextToSpeechGrpc.TextToSpeechImplBase,
         tokenProvider: AccessTokenProvider = AccessTokenProvider { "test-token" },
         apiKeyProvider: ApiKeyProvider = ApiKeyProvider { "test-api-key" },
-        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_PROFILE,
     ) : AutoCloseable {
         /** Unique in-process transport name isolating this fixture from other tests. */
         private val serverName = InProcessServerBuilder.generateName()

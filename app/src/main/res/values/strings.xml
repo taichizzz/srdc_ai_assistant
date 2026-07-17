@@ -72,6 +72,9 @@
     <string name="submit_transcript">Submit transcript</string>
     <string name="voice_loop_toggle">Automatic voice reply</string>
     <string name="voice_loop_toggle_explanation">Disable for silent STT, model metrics, and transcript-only testing. It applies to the next completed session.</string>
+    <string name="voice_loop_tts_model_selector">Automatic reply TTS model (main pipeline)</string>
+    <string name="voice_loop_tts_model_selected">Main pipeline selected: %1$s · speaker: %2$s</string>
+    <string name="voice_loop_tts_model_explanation">Controls the next automatic transcript → reply → speech run. This is separate from the standalone DEBUG TTS selector below and cannot change during active audio.</string>
     <string name="retry">Retry</string>
     <string name="open_settings">Open settings</string>
     <string name="microphone_rationale">Microphone access is needed only when you press Start. Retry when you are ready to grant it.</string>

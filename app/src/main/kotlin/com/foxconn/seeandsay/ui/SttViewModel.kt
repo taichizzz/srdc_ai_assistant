@@ -46,6 +46,8 @@ import kotlinx.coroutines.launch
  * @param debugChirp2SttClient V2 Chirp 2 client used only by the DEBUG comparison harness.
  * @param debugChirp3SttClient V2 Chirp 3 client used only by the DEBUG comparison harness.
  * @param voicePipeline composition boundary generating and speaking one post-STT response.
+ * @param selectVoiceLoopTtsModel provider-neutral composition callback selecting the cloud model
+ * used by the next automatic VoicePipeline reply.
  * @param initialVoiceLoopEnabled initial automatic-reply toggle; production defaults to enabled.
  * @param monotonicClock clock used only for DEBUG latency metrics; tests inject virtual time.
  *
@@ -66,6 +68,7 @@ class SttViewModel(
     private val debugChirp2SttClient: SttClient,
     private val debugChirp3SttClient: SttClient,
     private val voicePipeline: VoicePipeline,
+    private val selectVoiceLoopTtsModel: (TtsModelOption) -> Unit = {},
     initialVoiceLoopEnabled: Boolean = true,
     private val monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
 ) : ViewModel() {
@@ -135,6 +138,47 @@ class SttViewModel(
         val status = mutableUiState.value.status
         if (status == SttStatus.Replying || status == SttStatus.Speaking) return
         mutableUiState.update { it.copy(voiceLoopEnabled = enabled) }
+    }
+
+    /**
+     * Selects the cloud TTS profile used by the next automatic main-pipeline reply.
+     *
+     * @param model WaveNet baseline or Gemini evaluation option.
+     * @return This function has no return value.
+     *
+     * The synchronous DEBUG-only main-thread event performs no synthesis or playback. It is ignored
+     * while any STT/audio/reply session is active so one utterance cannot change models mid-flight.
+     * The composition callback owns only provider-neutral client selection; unexpected local
+     * selection failure becomes recoverable Error without exposing credentials or provider types.
+     */
+    fun onVoiceLoopTtsModelSelected(model: TtsModelOption) {
+        val state = mutableUiState.value
+        if (
+            !BuildConfig.DEBUG ||
+                model == state.selectedVoiceLoopTtsModel ||
+                state.status == SttStatus.RequestingPermission ||
+                state.status == SttStatus.Connecting ||
+                state.status == SttStatus.Listening ||
+                state.status == SttStatus.Stopping ||
+                state.status == SttStatus.Replying ||
+                state.status == SttStatus.Speaking ||
+                state.isDebugRecording ||
+                state.isDebugPlaybackActive ||
+                state.isCloudSttSmokeTestRunning
+        ) {
+            return
+        }
+        try {
+            selectVoiceLoopTtsModel(model)
+            mutableUiState.update { it.copy(selectedVoiceLoopTtsModel = model) }
+        } catch (_: Throwable) {
+            mutableUiState.update {
+                it.copy(
+                    status = SttStatus.Error,
+                    errorMessage = VOICE_LOOP_TTS_MODEL_SELECTION_ERROR,
+                )
+            }
+        }
     }
 
     /**
@@ -1412,6 +1456,7 @@ class SttViewModel(
      * @param debugChirp2SttClient V2 Chirp 2 client used only by DEBUG smoke UI.
      * @param debugChirp3SttClient V2 Chirp 3 client used only by DEBUG smoke UI.
      * @param voicePipeline production M1.3 reply/TTS composition owned by this ViewModel.
+     * @param selectVoiceLoopTtsModel provider-neutral selector for the next automatic reply model.
      * @param initialVoiceLoopEnabled initial automatic-reply behavior, true in production.
      * @param monotonicClock debug latency clock; defaults to the platform monotonic source.
      *
@@ -1428,6 +1473,7 @@ class SttViewModel(
         private val debugChirp2SttClient: SttClient,
         private val debugChirp3SttClient: SttClient,
         private val voicePipeline: VoicePipeline,
+        private val selectVoiceLoopTtsModel: (TtsModelOption) -> Unit = {},
         private val initialVoiceLoopEnabled: Boolean = true,
         private val monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
     ) : ViewModelProvider.Factory {
@@ -1448,17 +1494,18 @@ class SttViewModel(
                 "Unsupported ViewModel class: ${modelClass.name}"
             }
             return SttViewModel(
-                audioCaptureSource,
-                pcmAudioPlayer,
-                accessTokenProvider,
-                apiKeyProvider,
-                productionSttClient,
-                debugV1SttClient,
-                debugChirp2SttClient,
-                debugChirp3SttClient,
-                voicePipeline,
-                initialVoiceLoopEnabled,
-                monotonicClock,
+                audioCaptureSource = audioCaptureSource,
+                pcmAudioPlayer = pcmAudioPlayer,
+                accessTokenProvider = accessTokenProvider,
+                apiKeyProvider = apiKeyProvider,
+                productionSttClient = productionSttClient,
+                debugV1SttClient = debugV1SttClient,
+                debugChirp2SttClient = debugChirp2SttClient,
+                debugChirp3SttClient = debugChirp3SttClient,
+                voicePipeline = voicePipeline,
+                selectVoiceLoopTtsModel = selectVoiceLoopTtsModel,
+                initialVoiceLoopEnabled = initialVoiceLoopEnabled,
+                monotonicClock = monotonicClock,
             ) as T
         }
     }
@@ -1506,6 +1553,11 @@ class SttViewModel(
         const val PLAYBACK_ERROR_FALLBACK = "Debug audio playback failed. Please retry."
         const val PRODUCTION_STT_ERROR = "Speech recognition failed. Please retry."
         const val VOICE_LOOP_ERROR = "The assistant reply could not be spoken. Please retry."
+
+        /** Fixed non-secret recovery message for an unexpected local model-router failure. */
+        const val VOICE_LOOP_TTS_MODEL_SELECTION_ERROR =
+            "The automatic reply TTS model could not be changed. Please retry."
+
         const val CLOUD_PROVIDER_ERROR =
             "Cloud speech authentication is unavailable. Check local configuration and retry."
         const val CLOUD_STT_SMOKE_ERROR = "Cloud STT test failed. Please retry."

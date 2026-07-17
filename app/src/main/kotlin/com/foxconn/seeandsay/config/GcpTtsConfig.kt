@@ -41,18 +41,20 @@ object GcpTtsConfig {
     /** BCP-47 language code for Mandarin as spoken in Taiwan. */
     const val LANGUAGE_CODE: String = "cmn-tw"
 
-    /** Current Taiwan-Mandarin premium voice selected for deterministic evaluation. */
-    const val VOICE_NAME: String = "cmn-TW-Wavenet-B"
+    /** Current Taiwan-Mandarin premium WaveNet voice selected for deterministic evaluation. */
+    const val WAVENET_VOICE_NAME: String = "cmn-TW-Wavenet-B"
 
-    /** Gemini-TTS low-latency single-speaker model offered as a DEBUG evaluation alternative. */
-    const val GEMINI_FLASH_LITE_MODEL: String = "gemini-2.5-flash-lite-preview-tts"
+    /** Gemini-TTS single-speaker model selected for DEBUG and main-pipeline evaluation. */
+    const val GEMINI_MODEL_NAME: String = "gemini-3.1-flash-tts-preview"
 
     /** Gemini single-speaker name; Cloud TTS places this value in VoiceSelectionParams.name. */
-    const val GEMINI_FLASH_LITE_SPEAKER: String = "Kore"
+    const val GEMINI_SPEAKER_NAME: String = "Kore"
 
-    /** Style direction encouraging the preview model to retain a Taiwan-Mandarin assistant voice. */
-    const val GEMINI_FLASH_LITE_PROMPT: String =
-        "Speak naturally and clearly as an in-vehicle assistant in Taiwan Mandarin."
+    /** User-selected style direction for a calm, intelligible Taiwan-Mandarin driving assistant. */
+    const val GEMINI_STYLE_PROMPT: String =
+        "Speak as a calm, friendly in-vehicle assistant in natural Taiwan Mandarin. " +
+            "(Taiwanese accent, Traditional Chinese — not Mainland). Steady, clearly enunciated, " +
+            "concise, and low-distraction, easy to hear over road noise while driving."
 
     /** Classic unary text-field limit in UTF-8 bytes. */
     const val CLASSIC_MAXIMUM_TEXT_BYTES: Int = 5_000
@@ -72,21 +74,21 @@ object GcpTtsConfig {
     /** Cloud TTS produces one mono speech channel for the selected voice/configuration. */
     const val CHANNEL_COUNT: Int = 1
 
-    /** Stable Taiwan-Mandarin WaveNet baseline used by the default DEBUG selection. */
-    val WAVENET_A_PROFILE: GcpTtsSynthesisProfile =
+    /** Stable Taiwan-Mandarin WaveNet baseline used by the default automatic/debug selection. */
+    val WAVENET_PROFILE: GcpTtsSynthesisProfile =
         GcpTtsSynthesisProfile(
             languageCode = LANGUAGE_CODE,
-            voiceName = VOICE_NAME,
+            voiceName = WAVENET_VOICE_NAME,
             maximumTextBytes = CLASSIC_MAXIMUM_TEXT_BYTES,
         )
 
-    /** Preview Gemini-TTS evaluation profile using the requested Kore single speaker. */
-    val GEMINI_FLASH_LITE_KORE_PROFILE: GcpTtsSynthesisProfile =
+    /** Gemini-TTS profile using the user-selected model, prompt, and Kore single speaker. */
+    val GEMINI_PROFILE: GcpTtsSynthesisProfile =
         GcpTtsSynthesisProfile(
             languageCode = LANGUAGE_CODE,
-            voiceName = GEMINI_FLASH_LITE_SPEAKER,
-            modelName = GEMINI_FLASH_LITE_MODEL,
-            prompt = GEMINI_FLASH_LITE_PROMPT,
+            voiceName = GEMINI_SPEAKER_NAME,
+            modelName = GEMINI_MODEL_NAME,
+            prompt = GEMINI_STYLE_PROMPT,
             maximumTextBytes = GEMINI_MAXIMUM_TEXT_BYTES,
         )
 

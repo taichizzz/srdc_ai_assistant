@@ -203,16 +203,16 @@ class TtsViewModelTest {
     @Test
     fun debugModelSelectionIsUsedByNextSpeak() =
         runTest {
-            val selections = mutableListOf<DebugTtsModel>()
+            val selections = mutableListOf<TtsModelOption>()
             val client = FakeTtsClient()
             val viewModel = TtsViewModel(client, selections::add)
 
-            viewModel.onDebugModelSelected(DebugTtsModel.GeminiFlashLiteKore)
+            viewModel.onDebugModelSelected(TtsModelOption.Gemini)
             assertEquals(
-                DebugTtsModel.GeminiFlashLiteKore,
+                TtsModelOption.Gemini,
                 viewModel.uiState.value.selectedDebugModel,
             )
-            assertEquals(listOf(DebugTtsModel.GeminiFlashLiteKore), selections)
+            assertEquals(listOf(TtsModelOption.Gemini), selections)
 
             viewModel.onSpeakRequested("你好")
             advanceUntilIdle()
@@ -220,7 +220,7 @@ class TtsViewModelTest {
             assertEquals(listOf("你好"), client.requests)
             assertEquals(TtsStatus.Completed, viewModel.uiState.value.status)
             assertEquals(
-                DebugTtsModel.GeminiFlashLiteKore,
+                TtsModelOption.Gemini,
                 viewModel.uiState.value.selectedDebugModel,
             )
         }

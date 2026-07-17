@@ -15,6 +15,60 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-17] — M1.3 amendment: Roxanne spoken identity
+
+### Changed
+
+- Changed the rule-based greeting and direct identity responses from `我是 IVI AI 助理` to the
+  requested spoken identity `我是AI 助理 Roxanne`; the application display name remains
+  **IVI AI 助理**.
+- Updated reply-engine/ViewModel expectations and `docs/demos/M1.3.md` so automated and manual
+  acceptance use the exact new introduction.
+
+### Notes
+
+- Kept the identity deterministic in `RuleBasedReplyEngine`; this changes reply content only and
+  does not alter intent matching, the voice pipeline, TTS routing, or the selected TTS model.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 91 unit tests
+  passed, lint completed with no blocking issue, and both APK variants assembled successfully.
+
+## [2026-07-17] — M1.3 amendment: automatic-reply TTS model selector
+
+### Added
+
+- Added `ui/TtsModelOption.kt`, a provider-neutral WaveNet/Gemini selection shared by the automatic
+  main pipeline and standalone DEBUG TTS harness, with model/speaker labels and secret-free log IDs.
+- Added a DEBUG **Automatic reply TTS model (main pipeline)** selector near the voice-loop controls.
+  It displays the requested model/speaker, is disabled during all active audio/pipeline work, and is
+  independent from the standalone DEBUG TTS selector.
+- Added `SttViewModelTest` coverage proving idle selection updates the main-pipeline router and an
+  active STT session cannot change the model for an in-flight utterance.
+
+### Changed
+
+- Changed `ui/MainActivity.kt` so the production `VoicePipeline` owns a `SwitchableTtsClient` with
+  independent WaveNet and Gemini cloud clients behind the existing cloud-to-device fallback. Debug
+  selection affects subsequent automatic replies; release allocates only the WaveNet default.
+- Changed the configured Gemini profile to the user-selected `gemini-3.1-flash-tts-preview`, `Kore`,
+  and calm Taiwan-Mandarin low-distraction driving prompt. Renamed stale Flash-Lite/WaveNet-A symbols
+  so code and UI labels reflect the actual configured profiles (`cmn-TW-Wavenet-B` for WaveNet).
+- Generalized the old DEBUG-only model enum and `SwitchableTtsClient` documentation for safe reuse by
+  both selectors without changing `TtsClient`, `VoicePipeline`, STT, or reply-engine contracts.
+- Updated `docs/ARCHITECTURE.md`, `docs/demos/M1.2.md`, and `docs/demos/M1.3.md` with selector scope,
+  release behavior, credential requirements, Logcat evidence, and device acceptance steps.
+
+### Notes
+
+- Kept WaveNet as the default and restricted the main-pipeline selector to DEBUG builds so release
+  behavior cannot change accidentally during model evaluation.
+- Selection is snapshotted per future `speak` call and blocked while audio is active; it never
+  cancels or splits an in-flight synthesis/playback request.
+- A model selection records the requested cloud profile only. `TtsEngine` remains the source of
+  truth for whether cloud playback succeeded or on-device fallback actually spoke.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 91 unit tests
+  passed with zero failures/skips, lint completed with no blocking issue, and both APK variants
+  assembled successfully.
+
 ## [2026-07-17] — M1.2 amendment: IAM bearer precedence for Gemini-TTS
 
 ### Changed

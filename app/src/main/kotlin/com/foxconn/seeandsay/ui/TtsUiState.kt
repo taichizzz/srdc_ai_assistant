@@ -38,6 +38,6 @@ data class TtsUiState(
     val status: TtsStatus = TtsStatus.Idle,
     val currentText: String = "",
     val errorMessage: String? = null,
-    val selectedDebugModel: DebugTtsModel = DebugTtsModel.WavenetA,
+    val selectedDebugModel: TtsModelOption = TtsModelOption.WaveNet,
     val playbackEngine: TtsPlaybackEngine = TtsPlaybackEngine.NotUsed,
 )

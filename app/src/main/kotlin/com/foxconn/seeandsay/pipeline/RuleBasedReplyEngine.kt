@@ -119,10 +119,10 @@ class RuleBasedReplyEngine(
     private companion object {
 
         /** Required greeting response spoken by the later M1.3 pipeline. */
-        const val GREETING_REPLY = "你好，我是 IVI AI 助理，很高興為你服務。"
+        const val GREETING_REPLY = "你好，我是AI 助理 Roxanne，很高興為你服務。"
 
         /** Deterministic response for a direct assistant identity question. */
-        const val IDENTITY_REPLY = "我是 IVI AI 助理，可以協助你操作車載系統。"
+        const val IDENTITY_REPLY = "我是AI 助理 Roxanne，可以協助你操作車載系統。"
 
         /** Discoverable list of local commands available before screen reading/operation. */
         const val HELP_REPLY =

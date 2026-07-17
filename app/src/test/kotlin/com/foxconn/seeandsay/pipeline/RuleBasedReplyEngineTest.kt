@@ -26,7 +26,7 @@ class RuleBasedReplyEngineTest {
      */
     @Test
     fun greetingVariantsReturnRequiredReply() {
-        val expected = "你好，我是 IVI AI 助理，很高興為你服務。"
+        val expected = "你好，我是AI 助理 Roxanne，很高興為你服務。"
         val variants = listOf("你好", " 你好! ", "哈囉。", "hello", "HELLO!", " Ｈｅｌｌｏ！ ")
 
         variants.forEach { transcript ->
@@ -48,7 +48,7 @@ class RuleBasedReplyEngineTest {
 
         variants.forEach { transcript ->
             assertEquals(
-                "我是 IVI AI 助理，可以協助你操作車載系統。",
+                "我是AI 助理 Roxanne，可以協助你操作車載系統。",
                 engine.replyTo(transcript),
             )
         }

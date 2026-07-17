@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * Routes each new utterance to one of several provider-neutral TTS clients.
  *
- * @param initialClient client used until DEBUG UI selection changes.
+ * @param initialClient client used until an automatic-reply or DEBUG UI selection changes.
  * @param clients complete set of clients this router owns and may select.
  *
  * Selection is thread-safe and affects only calls that have not started; an in-flight [speak]

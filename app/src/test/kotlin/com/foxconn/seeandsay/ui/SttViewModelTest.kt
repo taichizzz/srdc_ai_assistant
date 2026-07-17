@@ -780,7 +780,7 @@ class SttViewModelTest {
 
             viewModel.submitTypedTranscript(" 你好 ")
 
-            val expectedReply = "你好，我是 IVI AI 助理，很高興為你服務。"
+            val expectedReply = "你好，我是AI 助理 Roxanne，很高興為你服務。"
             assertEquals("你好", viewModel.uiState.value.finalTranscript)
             assertEquals(expectedReply, viewModel.uiState.value.lastReplyText)
             assertEquals(listOf(expectedReply), ttsClient.requests)
@@ -904,6 +904,45 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies the main-pipeline TTS selector updates only future idle automatic replies.
+     *
+     * @return This test has no return value.
+     *
+     * The provider-neutral callback records selections without cloud/audio work. A synthetic
+     * Connecting session proves model changes are ignored mid-utterance; Stop then cancels the fake
+     * capture through normal structured cleanup with no real delay, device, or credential.
+     */
+    @Test
+    fun voiceLoopTtsModelSelectionUpdatesWhenIdleAndIsIgnoredWhileBusy() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val selections = mutableListOf<TtsModelOption>()
+            val viewModel =
+                createViewModel(
+                    selectVoiceLoopTtsModel = { selections += it },
+                )
+
+            assertEquals(TtsModelOption.WaveNet, viewModel.uiState.value.selectedVoiceLoopTtsModel)
+            viewModel.onVoiceLoopTtsModelSelected(TtsModelOption.Gemini)
+            assertEquals(TtsModelOption.Gemini, viewModel.uiState.value.selectedVoiceLoopTtsModel)
+            assertEquals(listOf(TtsModelOption.Gemini), selections)
+
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+            viewModel.onStartRequested()
+            assertTrue(
+                viewModel.uiState.value.status == SttStatus.Connecting ||
+                    viewModel.uiState.value.status == SttStatus.Listening,
+            )
+            viewModel.onVoiceLoopTtsModelSelected(TtsModelOption.WaveNet)
+
+            assertEquals(TtsModelOption.Gemini, viewModel.uiState.value.selectedVoiceLoopTtsModel)
+            assertEquals(listOf(TtsModelOption.Gemini), selections)
+
+            viewModel.onStopRequested()
+            advanceUntilIdle()
+            assertEquals(SttStatus.Completed, viewModel.uiState.value.status)
+        }
+
+    /**
      * Verifies a new push-to-talk session works after automatic speech has fully completed.
      *
      * @return This test has no return value.
@@ -988,6 +1027,7 @@ class SttViewModelTest {
      * @param debugChirp3SttClient deterministic Chirp 3 stream; defaults to the V1 fake.
      * @param replyEngine pure reply decision injected into the M1.3 pipeline.
      * @param ttsClient fake speech boundary injected into the M1.3 pipeline.
+     * @param selectVoiceLoopTtsModel fake provider-neutral automatic-reply model selector.
      * @param initialVoiceLoopEnabled whether automatic reply starts enabled; existing STT-only tests
      * default to false and focused M1.3 tests opt in explicitly.
      * @param monotonicClock fake timing source for DEBUG evaluation metrics.
@@ -1013,6 +1053,7 @@ class SttViewModelTest {
         debugChirp3SttClient: SttClient = debugCloudSttClient,
         replyEngine: ReplyEngine = RuleBasedReplyEngine(),
         ttsClient: TtsClient = FakeTtsClient(),
+        selectVoiceLoopTtsModel: (TtsModelOption) -> Unit = {},
         initialVoiceLoopEnabled: Boolean = false,
         monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
     ): SttViewModel =
@@ -1026,6 +1067,7 @@ class SttViewModelTest {
             debugChirp2SttClient = debugChirp2SttClient,
             debugChirp3SttClient = debugChirp3SttClient,
             voicePipeline = VoicePipeline(replyEngine, ttsClient),
+            selectVoiceLoopTtsModel = selectVoiceLoopTtsModel,
             initialVoiceLoopEnabled = initialVoiceLoopEnabled,
             monotonicClock = monotonicClock,
         )

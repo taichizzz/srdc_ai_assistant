@@ -47,7 +47,7 @@ class CloudTtsClient internal constructor(
         context: Context,
         accessTokenProvider: AccessTokenProvider,
         apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
-        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_PROFILE,
     ) : this(
         createProductionDependencies(
             context,

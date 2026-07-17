@@ -52,7 +52,7 @@ class CloudTtsSynthesizer internal constructor(
     private val apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
     private val channel: ManagedChannel,
     private val quotaProjectId: String?,
-    private val synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+    private val synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_PROFILE,
 ) : AutoCloseable {
 
     /** Thread-safe lifecycle flag preventing calls after shared-channel disposal. */
@@ -72,7 +72,7 @@ class CloudTtsSynthesizer internal constructor(
     constructor(
         accessTokenProvider: AccessTokenProvider,
         apiKeyProvider: ApiKeyProvider = BuildConfigApiKeyProvider(),
-        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+        synthesisProfile: GcpTtsSynthesisProfile = GcpTtsConfig.WAVENET_PROFILE,
     ) : this(
         accessTokenProvider = accessTokenProvider,
         apiKeyProvider = apiKeyProvider,
