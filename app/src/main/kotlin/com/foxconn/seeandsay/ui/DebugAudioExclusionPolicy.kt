@@ -5,8 +5,9 @@ package com.foxconn.seeandsay.ui
  *
  * Functions are pure and read immutable state only. They perform no I/O, launch no coroutine, and
  * have no failure/cancellation behavior. The policy prevents a UI event from starting TTS until all
- * capture/drain/playback work is released, and blocks every microphone entry while TTS is Speaking.
- * M1.3's VoicePipeline will separately own active mic cancellation before integrated speech.
+ * capture/drain/playback work is released, and blocks every microphone entry while standalone or
+ * integrated TTS is Speaking. The M1.3 pipeline additionally joins active microphone capture before
+ * entering its Replying/Speaking states, so this UI gate reinforces rather than creates the handoff.
  */
 internal object DebugAudioExclusionPolicy {
 
@@ -34,6 +35,8 @@ internal object DebugAudioExclusionPolicy {
             state.status == SttStatus.Connecting ||
             state.status == SttStatus.Listening ||
             state.status == SttStatus.Stopping ||
+            state.status == SttStatus.Replying ||
+            state.status == SttStatus.Speaking ||
             state.isDebugRecording ||
             state.isDebugPlaybackActive ||
             state.isCloudSttSmokeTestRunning

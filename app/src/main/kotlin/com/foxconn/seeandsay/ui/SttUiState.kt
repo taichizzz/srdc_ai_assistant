@@ -23,6 +23,12 @@ enum class SttStatus {
     /** Microphone input is closed and the active cloud stream is draining final results. */
     Stopping,
 
+    /** The local ReplyEngine is selecting one response for the completed utterance. */
+    Replying,
+
+    /** The integrated M1.3 TtsClient is synthesizing or playing the generated response. */
+    Speaking,
+
     /** The user stopped or a final transcript was committed. */
     Completed,
 
@@ -75,6 +81,8 @@ enum class CloudConfigurationStatus {
  * @property status current permission/session state.
  * @property partialTranscript replaceable interim recognition text.
  * @property finalTranscript accumulated committed recognition text.
+ * @property lastReplyText generated assistant response for the current or latest completed loop.
+ * @property voiceLoopEnabled whether completed production/typed transcripts automatically reply.
  * @property errorMessage recoverable user-facing failure, or `null` when no failure is active.
  * @property microphonePermission current platform permission outcome.
  * @property isDebugRecording whether the bounded record-then-playback capture is active.
@@ -97,6 +105,8 @@ data class SttUiState(
     val status: SttStatus = SttStatus.Idle,
     val partialTranscript: String = "",
     val finalTranscript: String = "",
+    val lastReplyText: String = "",
+    val voiceLoopEnabled: Boolean = true,
     val errorMessage: String? = null,
     val microphonePermission: MicrophonePermissionStatus =
         MicrophonePermissionStatus.NotRequested,

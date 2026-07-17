@@ -15,6 +15,87 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-16] — M1.3 Phase 2: automatic voice interaction loop
+
+### Added
+
+- Added `pipeline/VoicePipeline.kt`, which composes one completed transcript through
+  `ReplyEngine` and the provider-neutral `TtsClient`, suspending until the generated reply finishes
+  playback and propagating structured cancellation unchanged.
+- Added `Replying`/`Speaking`, `lastReplyText`, and the default-enabled automatic voice-loop toggle
+  to `ui/SttUiState.kt`.
+- Added focused fake/virtual-time ViewModel coverage for partial suppression, exactly-once replies
+  across multiple final segments, typed-input speech, microphone-before-TTS ordering, recoverable
+  TTS failure, cancellation, toggle-off behavior, and a clean second explicit Start.
+- Replaced the Phase 1-only `docs/demos/M1.3.md` with reproducible automated, mic-less emulator,
+  real-device, toggle, echo-rule, fallback, and recovery acceptance steps.
+
+### Changed
+
+- Changed `ui/SttViewModel.kt` so a completed production session aggregates its non-blank final
+  segments, releases and joins microphone capture, generates one reply, speaks it once, and returns
+  to `Idle`. Typed input now invokes the same post-final pipeline without requiring mic permission.
+- Changed `ui/MainActivity.kt` to inject `RuleBasedReplyEngine` plus a separately owned
+  cloud-to-device `FallbackTtsClient` through `VoicePipeline`; the existing DEBUG TTS ViewModel keeps
+  its independent client lifecycle.
+- Reordered `ui/SttDebugScreen.kt` so session status and Start/Stop are followed immediately by the
+  partial transcript, accumulated final transcript, and current/last assistant reply, with typed
+  input next and all cloud/metrics/loopback/standalone-TTS tools below.
+- Extended `ui/DebugAudioExclusionPolicy.kt` and its tests so integrated Replying/Speaking states
+  block competing audio actions in addition to the existing standalone TTS gate.
+- Updated `app/src/main/res/values/strings.xml` for the visible assistant reply and the DEBUG
+  **Automatic voice reply** switch.
+
+### Notes
+
+- Defined “exactly once” at the completed STT-stream/session boundary: partial results never reply,
+  multiple final segments are newline-joined in arrival order, and one pipeline invocation occurs
+  only after the recognizer completes or Stop finishes draining.
+- Kept push-to-talk semantics: Stop closes the active utterance, automatic reply starts afterward,
+  and the app never opens the microphone again until the user explicitly presses Start.
+- Joined the capture child before invoking TTS because resource-order enforcement, not UI disabling
+  alone, is required to prevent the assistant from recording its own speech.
+- Chose a DEBUG switch backed by state rather than a new production feature flag because the toggle
+  is an evaluation aid; it defaults to enabled in every build, while release has no switch surface.
+- Gave the production loop its own fallback TTS composition because sharing the standalone DEBUG
+  ViewModel's closeable client would create ambiguous lifecycle ownership and double-disposal risk.
+- M1.3 (the Week 1 voice-loop mainline) is code-complete pending real-device acceptance with a live
+  STT credential, microphone/speaker, and usable cloud or Taiwan-Mandarin device TTS voice.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 82 unit tests
+  passed with zero failures/skips, lint completed with no blocking issue, and both APK variants
+  assembled successfully.
+
+## [2026-07-16] — M1.3 Phase 1: deterministic reply engine
+
+### Added
+
+- Added `pipeline/ReplyEngine.kt`, the pure transcript-to-non-blank-reply contract
+  for the M1.3 composition layer.
+- Added `pipeline/TranscriptNormalizer.kt` with reusable NFKC normalization,
+  punctuation/whitespace removal, and locale-stable lowercase comparison.
+- Added `pipeline/RuleBasedReplyEngine.kt` with preset greetings (`你好`, `哈囉`,
+  `hello`), a demo-friendly identity response, and a transcript-preserving fallback
+  for all unmatched or empty input.
+- Added focused pure-JVM tests covering noisy greeting variants, identity matching,
+  unmatched fallback, the never-blank guarantee, and normalization behavior.
+- Added `docs/demos/M1.3.md` with the deterministic Phase 1 acceptance matrix and
+  an explicit note that automatic STT→reply→TTS wiring starts in Phase 2.
+
+### Notes
+
+- Placed the contract and implementation in `pipeline/` because this is
+  composition-level reply logic; no `speech/`, `bridge/`, `decision/`, UI, or core
+  Bridge contract was changed.
+- Chose exact normalized rule keys rather than substring matching so unrelated
+  utterances cannot accidentally trigger a greeting response.
+- Preserved the trimmed original transcript only in the unknown-response text while
+  using normalized text solely for matching, keeping spoken feedback understandable.
+- LM generation is intentionally absent. A future LM-backed `ReplyEngine` can be
+  selected behind `LM_ENABLED` (default false) without changing the local contract.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`:
+  all 75 unit tests passed, lint completed with no blocking issue, and both debug
+  and release APKs assembled successfully.
+
 ## [2026-07-16] — Chirp V2 service-account token workflow
 
 ### Changed

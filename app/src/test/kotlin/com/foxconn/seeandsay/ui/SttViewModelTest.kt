@@ -5,13 +5,18 @@ import com.foxconn.seeandsay.config.AccessTokenProvider
 import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
 import com.foxconn.seeandsay.config.FakeAccessTokenProvider
+import com.foxconn.seeandsay.pipeline.ReplyEngine
+import com.foxconn.seeandsay.pipeline.RuleBasedReplyEngine
+import com.foxconn.seeandsay.pipeline.VoicePipeline
 import com.foxconn.seeandsay.speech.AudioCaptureSource
 import com.foxconn.seeandsay.speech.CloudSttException
 import com.foxconn.seeandsay.speech.CloudSttFailureReason
 import com.foxconn.seeandsay.speech.FakeSttClient
+import com.foxconn.seeandsay.speech.FakeTtsClient
 import com.foxconn.seeandsay.speech.PcmAudioPlayer
 import com.foxconn.seeandsay.speech.SttClient
 import com.foxconn.seeandsay.speech.SttResult
+import com.foxconn.seeandsay.speech.TtsClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -660,6 +665,274 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies partials never speak and multiple final segments produce one combined reply request.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] gates the fake final segments and TTS completion on the controlled dispatcher. It
+     * performs no device/network/audio I/O and fails if a partial triggers reply work, if each final
+     * speaks independently, or if the completed session fails to return to Idle.
+     */
+    @Test
+    fun completedSessionRepliesExactlyOnceAcrossMultipleFinals() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val allowFinals = CompletableDeferred<Unit>()
+            val finishSpeech = CompletableDeferred<Unit>()
+            val replyInputs = mutableListOf<String>()
+            val replyEngine =
+                object : ReplyEngine {
+                    /** Records one completed session transcript and returns deterministic speech. */
+                    override fun replyTo(transcript: String): String {
+                        replyInputs += transcript
+                        return "combined reply"
+                    }
+                }
+            val ttsClient = FakeTtsClient { finishSpeech.await() }
+            val productionClient =
+                FakeSttClient {
+                    flow {
+                        emit(SttResult("你", isFinal = false))
+                        allowFinals.await()
+                        emit(SttResult("你", isFinal = true))
+                        emit(SttResult("好", isFinal = true))
+                    }
+                }
+            val viewModel =
+                createViewModel(
+                    productionSttClient = productionClient,
+                    replyEngine = replyEngine,
+                    ttsClient = ttsClient,
+                    initialVoiceLoopEnabled = true,
+                )
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+            assertEquals("你", viewModel.uiState.value.partialTranscript)
+            assertTrue(replyInputs.isEmpty())
+            assertTrue(ttsClient.requests.isEmpty())
+
+            allowFinals.complete(Unit)
+
+            assertEquals(listOf("你\n好"), replyInputs)
+            assertEquals(listOf("combined reply"), ttsClient.requests)
+            assertEquals(SttStatus.Speaking, viewModel.uiState.value.status)
+            assertEquals("combined reply", viewModel.uiState.value.lastReplyText)
+
+            finishSpeech.complete(Unit)
+
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies typed input uses the same automatic ReplyEngine/TTS path without microphone access.
+     *
+     * @return This test has no return value.
+     *
+     * The test runs entirely on the controlled dispatcher with immediate fake playback. It fails if
+     * typed text bypasses the final reducer, needs permission, or does not speak the greeting once.
+     */
+    @Test
+    fun typedInputAutomaticallySpeaksThroughSharedLoop() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val ttsClient = FakeTtsClient()
+            val viewModel =
+                createViewModel(
+                    ttsClient = ttsClient,
+                    initialVoiceLoopEnabled = true,
+                )
+
+            viewModel.submitTypedTranscript(" 你好 ")
+
+            val expectedReply = "你好，我是 IVI AI 助理，很高興為你服務。"
+            assertEquals("你好", viewModel.uiState.value.finalTranscript)
+            assertEquals(expectedReply, viewModel.uiState.value.lastReplyText)
+            assertEquals(listOf(expectedReply), ttsClient.requests)
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+        }
+
+    /**
+     * Verifies production capture cleanup and cloud half-close finish before integrated TTS begins.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] records fake lifecycle events with no hardware/network work. Stop must unwind capture,
+     * complete audio input, receive the final transcript, and only then invoke TTS, proving the echo
+     * handoff order rather than relying on UI button disabling alone.
+     */
+    @Test
+    fun productionMicrophoneIsReleasedBeforeVoiceReplyStarts() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val events = mutableListOf<String>()
+            val audioSource =
+                AudioCaptureSource {
+                    flow {
+                        try {
+                            emit(byteArrayOf(1, 2, 3, 4))
+                            awaitCancellation()
+                        } finally {
+                            events += "capture-released"
+                        }
+                    }
+                }
+            val productionClient =
+                FakeSttClient { audio ->
+                    flow {
+                        audio.collect()
+                        events += "audio-input-completed"
+                        emit(SttResult("你好", isFinal = true))
+                    }
+                }
+            val ttsClient = FakeTtsClient { events += "tts-started" }
+            val viewModel =
+                createViewModel(
+                    audioCaptureSource = audioSource,
+                    productionSttClient = productionClient,
+                    ttsClient = ttsClient,
+                    initialVoiceLoopEnabled = true,
+                )
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+            viewModel.onStartRequested()
+
+            viewModel.onStopRequested()
+
+            assertEquals(
+                listOf("capture-released", "audio-input-completed", "tts-started"),
+                events,
+            )
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+        }
+
+    /**
+     * Verifies an integrated reply/TTS failure is recoverable and Retry restores microphone use.
+     *
+     * @return This test has no return value.
+     *
+     * The fake TTS fails synchronously without audio/network I/O. The test fails if the exception
+     * escapes, leaves a busy state, loses the committed transcript, or Retry cannot restore Idle.
+     */
+    @Test
+    fun voiceLoopFailureIsRecoverableAndRetryable() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val viewModel =
+                createViewModel(
+                    ttsClient = FakeTtsClient { error("fake TTS failure") },
+                    initialVoiceLoopEnabled = true,
+                )
+
+            viewModel.submitTypedTranscript("你好")
+
+            assertEquals(SttStatus.Error, viewModel.uiState.value.status)
+            assertEquals("你好", viewModel.uiState.value.finalTranscript)
+            assertTrue(viewModel.uiState.value.errorMessage?.contains("reply") == true)
+
+            viewModel.onRetryRequested()
+
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies the DEBUG toggle retains transcript commits while suppressing automatic speech.
+     *
+     * @return This test has no return value.
+     *
+     * The synchronous toggle and typed reducer use no external resource. The test fails if disabling
+     * the loop drops STT text, invokes ReplyEngine/TTS, or leaves the pure-STT Completed state.
+     */
+    @Test
+    fun disabledVoiceLoopCommitsTranscriptWithoutSpeaking() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val ttsClient = FakeTtsClient()
+            val viewModel =
+                createViewModel(
+                    ttsClient = ttsClient,
+                    initialVoiceLoopEnabled = true,
+                )
+
+            viewModel.onVoiceLoopEnabledChanged(false)
+            viewModel.submitTypedTranscript("你好")
+
+            assertFalse(viewModel.uiState.value.voiceLoopEnabled)
+            assertEquals("你好", viewModel.uiState.value.finalTranscript)
+            assertTrue(viewModel.uiState.value.lastReplyText.isEmpty())
+            assertTrue(ttsClient.requests.isEmpty())
+            assertEquals(SttStatus.Completed, viewModel.uiState.value.status)
+        }
+
+    /**
+     * Verifies a new push-to-talk session works after automatic speech has fully completed.
+     *
+     * @return This test has no return value.
+     *
+     * Two finite fake sessions and immediate fake TTS run on the controlled dispatcher without I/O.
+     * The test fails if the first loop retains stale ownership, auto-relistens, or prevents a second
+     * explicit Start from producing its own single reply.
+     */
+    @Test
+    fun explicitNewStartWorksAfterVoiceLoopCompletion() =
+        runTest(mainDispatcherRule.dispatcher) {
+            var streamCount = 0
+            val productionClient =
+                FakeSttClient {
+                    streamCount += 1
+                    flowOf(SttResult("你好", isFinal = true))
+                }
+            val ttsClient = FakeTtsClient()
+            val viewModel =
+                createViewModel(
+                    productionSttClient = productionClient,
+                    ttsClient = ttsClient,
+                    initialVoiceLoopEnabled = true,
+                )
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            viewModel.onStartRequested()
+
+            assertEquals(2, streamCount)
+            assertEquals(2, ttsClient.requests.size)
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
+     * Verifies cancelling integrated speech stops playback without publishing a user-visible error.
+     *
+     * @return This test has no return value.
+     *
+     * The fake TTS suspends cancellably and records cleanup on the test dispatcher. Retry cancels the
+     * owning session; the test fails if cleanup is skipped or CancellationException becomes Error.
+     */
+    @Test
+    fun cancellingVoiceReplyStopsSpeechWithoutVisibleError() =
+        runTest(mainDispatcherRule.dispatcher) {
+            var playbackStopped = false
+            val viewModel =
+                createViewModel(
+                    ttsClient =
+                        FakeTtsClient {
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                playbackStopped = true
+                            }
+                        },
+                    initialVoiceLoopEnabled = true,
+                )
+
+            viewModel.submitTypedTranscript("你好")
+            assertEquals(SttStatus.Speaking, viewModel.uiState.value.status)
+
+            viewModel.onRetryRequested()
+
+            assertTrue(playbackStopped)
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
      * Creates a ViewModel with a cold fake capture that remains active until collector cancellation.
      *
      * @param audioCaptureSource cold fake PCM source for the test scenario.
@@ -670,6 +943,10 @@ class SttViewModelTest {
      * @param debugCloudSttClient deterministic V1 baseline stream for smoke-test events.
      * @param debugChirp2SttClient deterministic Chirp 2 stream; defaults to the V1 fake.
      * @param debugChirp3SttClient deterministic Chirp 3 stream; defaults to the V1 fake.
+     * @param replyEngine pure reply decision injected into the M1.3 pipeline.
+     * @param ttsClient fake speech boundary injected into the M1.3 pipeline.
+     * @param initialVoiceLoopEnabled whether automatic reply starts enabled; existing STT-only tests
+     * default to false and focused M1.3 tests opt in explicitly.
      * @param monotonicClock fake timing source for DEBUG evaluation metrics.
      * @return ViewModel whose capture and playback boundaries perform no platform I/O.
      *
@@ -691,6 +968,9 @@ class SttViewModelTest {
         debugCloudSttClient: SttClient = FakeSttClient(),
         debugChirp2SttClient: SttClient = debugCloudSttClient,
         debugChirp3SttClient: SttClient = debugCloudSttClient,
+        replyEngine: ReplyEngine = RuleBasedReplyEngine(),
+        ttsClient: TtsClient = FakeTtsClient(),
+        initialVoiceLoopEnabled: Boolean = false,
         monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
     ): SttViewModel =
         SttViewModel(
@@ -702,6 +982,8 @@ class SttViewModelTest {
             debugV1SttClient = debugCloudSttClient,
             debugChirp2SttClient = debugChirp2SttClient,
             debugChirp3SttClient = debugChirp3SttClient,
+            voicePipeline = VoicePipeline(replyEngine, ttsClient),
+            initialVoiceLoopEnabled = initialVoiceLoopEnabled,
             monotonicClock = monotonicClock,
         )
 }

@@ -64,10 +64,14 @@
     <string name="no_partial_transcript">No partial transcript</string>
     <string name="final_transcript_label">Accumulated final transcript</string>
     <string name="no_final_transcript">No final transcript</string>
+    <string name="assistant_reply_label">Assistant reply (current/last)</string>
+    <string name="no_assistant_reply">No assistant reply yet</string>
     <string name="typed_input_title">Typed-input fallback</string>
-    <string name="typed_input_explanation">Works without microphone permission and uses the same final-transcript path as speech recognition.</string>
+    <string name="typed_input_explanation">Works without microphone permission and uses the same final-transcript and automatic-reply path as speech recognition.</string>
     <string name="typed_transcript_label">Transcript text</string>
     <string name="submit_transcript">Submit transcript</string>
+    <string name="voice_loop_toggle">Automatic voice reply</string>
+    <string name="voice_loop_toggle_explanation">Disable for silent STT, model metrics, and transcript-only testing. It applies to the next completed session.</string>
     <string name="retry">Retry</string>
     <string name="open_settings">Open settings</string>
     <string name="microphone_rationale">Microphone access is needed only when you press Start. Retry when you are ready to grant it.</string>

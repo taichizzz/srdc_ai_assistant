@@ -23,6 +23,8 @@ import com.foxconn.seeandsay.config.BuildConfigAccessTokenProvider
 import com.foxconn.seeandsay.config.BuildConfigApiKeyProvider
 import com.foxconn.seeandsay.config.GcpSttV2Config
 import com.foxconn.seeandsay.config.GcpTtsConfig
+import com.foxconn.seeandsay.pipeline.RuleBasedReplyEngine
+import com.foxconn.seeandsay.pipeline.VoicePipeline
 import com.foxconn.seeandsay.speech.CloudSttClient
 import com.foxconn.seeandsay.speech.CloudSttV2Client
 import com.foxconn.seeandsay.speech.CloudTtsClient
@@ -38,10 +40,11 @@ import com.foxconn.seeandsay.speech.SwitchableTtsClient
  * The activity translates platform permission results into provider-neutral ViewModel events. It
  * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
  * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected audio
- * components, the local-only credential-presence check, unchanged V1 production recognition, and
- * isolated V1/Chirp DEBUG comparison clients. A separate TtsViewModel owns cloud-first Taiwan-
- * Mandarin TTS with on-device fallback for the DEBUG M1.2 controls. Permission requests can be
- * denied or suppressed by Android; both outcomes become recoverable UI state rather than escaping.
+ * components, the local-only credential-presence check, V1 production recognition, and the M1.3
+ * ReplyEngine/TTS tail through VoicePipeline. A separate TtsViewModel owns an independent cloud-
+ * first Taiwan-Mandarin client for standalone DEBUG M1.2 controls, avoiding cross-ViewModel client
+ * ownership. Permission requests can be denied or suppressed by Android; both outcomes become
+ * recoverable UI state rather than escaping.
  */
 class MainActivity : ComponentActivity() {
 
@@ -71,6 +74,22 @@ class MainActivity : ComponentActivity() {
             } else {
                 cloudSttClient
             }
+        val productionVoiceTtsClient =
+            FallbackTtsClient(
+                cloudClient =
+                    CloudTtsClient(
+                        context = applicationContext,
+                        accessTokenProvider = accessTokenProvider,
+                        apiKeyProvider = apiKeyProvider,
+                        synthesisProfile = GcpTtsConfig.WAVENET_A_PROFILE,
+                    ),
+                deviceClient = DeviceTtsClient(applicationContext),
+                engineReporter = { engine ->
+                    // Production loop diagnostics expose only the selected route, never reply text,
+                    // audio, API keys, access tokens, prompts, or authorization metadata.
+                    Log.i("TtsEngine", "engine=${engine.logValue}")
+                },
+            )
         SttViewModel.Factory(
             audioCaptureSource = MicRecorder(applicationContext),
             pcmAudioPlayer = DebugAudioPlayer(),
@@ -80,6 +99,11 @@ class MainActivity : ComponentActivity() {
             debugV1SttClient = cloudSttClient,
             debugChirp2SttClient = chirp2Client,
             debugChirp3SttClient = chirp3Client,
+            voicePipeline =
+                VoicePipeline(
+                    replyEngine = RuleBasedReplyEngine(),
+                    ttsClient = productionVoiceTtsClient,
+                ),
         )
     }
 
@@ -195,6 +219,8 @@ class MainActivity : ComponentActivity() {
                         onRetry = sttViewModel::onRetryRequested,
                         onOpenSettings = ::openApplicationSettings,
                         onTypedTranscriptSubmitted = sttViewModel::submitTypedTranscript,
+                        onVoiceLoopEnabledChanged =
+                            sttViewModel::onVoiceLoopEnabledChanged,
                         onTtsSpeak = { text ->
                             if (
                                 BuildConfig.DEBUG &&

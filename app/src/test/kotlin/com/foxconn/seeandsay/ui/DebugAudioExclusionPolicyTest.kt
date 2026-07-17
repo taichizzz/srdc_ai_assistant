@@ -32,8 +32,9 @@ class DebugAudioExclusionPolicyTest {
      *
      * @return This test has no return value.
      *
-     * Pure state checks cover production listening, debug recording, cloud smoke testing, and Stop
-     * draining. No microphone or coroutine is started by this test.
+     * Pure state checks cover production listening, debug recording, cloud smoke testing, Stop
+     * draining, integrated reply generation, and integrated speech. No microphone or coroutine is
+     * started by this test.
      */
     @Test
     fun activeCaptureOrDrainBlocksTtsStart() {
@@ -60,6 +61,18 @@ class DebugAudioExclusionPolicyTest {
         assertFalse(
             DebugAudioExclusionPolicy.canStartTts(
                 SttUiState(status = SttStatus.Stopping),
+                idleTts,
+            ),
+        )
+        assertFalse(
+            DebugAudioExclusionPolicy.canStartTts(
+                SttUiState(status = SttStatus.Replying),
+                idleTts,
+            ),
+        )
+        assertFalse(
+            DebugAudioExclusionPolicy.canStartTts(
+                SttUiState(status = SttStatus.Speaking),
                 idleTts,
             ),
         )

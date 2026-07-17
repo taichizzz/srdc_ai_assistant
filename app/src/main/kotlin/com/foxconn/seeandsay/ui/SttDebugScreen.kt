@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -42,6 +43,7 @@ import com.foxconn.seeandsay.R
  * @param onOpenSettings invoked when permanent permission denial requires Android Settings.
  * @param onTypedTranscriptSubmitted invoked with manually entered text; the ViewModel routes it
  * through the same final-result reducer as production cloud STT.
+ * @param onVoiceLoopEnabledChanged changes automatic post-transcript reply/TTS for later sessions.
  * @param onTtsSpeak invoked with DEBUG text to pass to the injected provider-neutral TtsClient.
  * @param onDebugTtsModelSelected invoked to select the cloud model for the next DEBUG Speak.
  * @param onTtsStop invoked to cancel the active standalone DEBUG TTS request.
@@ -65,6 +67,7 @@ fun SttDebugScreen(
     onRetry: () -> Unit,
     onOpenSettings: () -> Unit,
     onTypedTranscriptSubmitted: (String) -> Unit,
+    onVoiceLoopEnabledChanged: (Boolean) -> Unit,
     onTtsSpeak: (String) -> Unit,
     onDebugTtsModelSelected: (DebugTtsModel) -> Unit,
     onTtsStop: () -> Unit,
@@ -77,7 +80,10 @@ fun SttDebugScreen(
             !state.isCloudSttSmokeTestRunning &&
             (state.status == SttStatus.Connecting || state.status == SttStatus.Listening)
     val isTransitioning =
-        state.status == SttStatus.RequestingPermission || state.status == SttStatus.Stopping
+        state.status == SttStatus.RequestingPermission ||
+            state.status == SttStatus.Stopping ||
+            state.status == SttStatus.Replying ||
+            state.status == SttStatus.Speaking
     val isAudioBusy = !DebugAudioExclusionPolicy.canStartTts(state, ttsState)
     val permissionLabel =
         when (state.microphonePermission) {
@@ -114,10 +120,6 @@ fun SttDebugScreen(
         HorizontalDivider()
 
         Text(
-            text = stringResource(R.string.permission_status, permissionLabel),
-            style = MaterialTheme.typography.bodyLarge,
-        )
-        Text(
             text = stringResource(R.string.session_status, state.status.name),
             style = MaterialTheme.typography.bodyLarge,
         )
@@ -142,6 +144,88 @@ fun SttDebugScreen(
                     },
             )
         }
+
+        Text(
+            text = stringResource(R.string.partial_transcript_label),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Text(
+            text = state.partialTranscript.ifBlank { stringResource(R.string.no_partial_transcript) },
+        )
+
+        Text(
+            text = stringResource(R.string.final_transcript_label),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Text(
+            text = state.finalTranscript.ifBlank { stringResource(R.string.no_final_transcript) },
+        )
+
+        Text(
+            text = stringResource(R.string.assistant_reply_label),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        Text(
+            text =
+                state.lastReplyText.ifBlank {
+                    stringResource(R.string.no_assistant_reply)
+                },
+        )
+
+        HorizontalDivider()
+        Text(
+            text = stringResource(R.string.typed_input_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            text = stringResource(R.string.typed_input_explanation),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = typedTranscript,
+            onValueChange = { typedTranscript = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.typed_transcript_label)) },
+            singleLine = true,
+            enabled = !isAudioBusy,
+        )
+        Button(
+            onClick = {
+                val submittedTranscript = typedTranscript.trim()
+                if (submittedTranscript.isNotEmpty()) {
+                    onTypedTranscriptSubmitted(submittedTranscript)
+                    typedTranscript = ""
+                }
+            },
+            enabled = typedTranscript.isNotBlank() && !isAudioBusy,
+        ) {
+            Text(stringResource(R.string.submit_transcript))
+        }
+        if (BuildConfig.DEBUG) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Switch(
+                    checked = state.voiceLoopEnabled,
+                    onCheckedChange = onVoiceLoopEnabledChanged,
+                    enabled = !isAudioBusy,
+                )
+                Text(
+                    text = stringResource(R.string.voice_loop_toggle),
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            }
+            Text(
+                text = stringResource(R.string.voice_loop_toggle_explanation),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Text(
+            text = stringResource(R.string.permission_status, permissionLabel),
+            style = MaterialTheme.typography.bodyLarge,
+        )
 
         HorizontalDivider()
         Text(
@@ -349,52 +433,6 @@ fun SttDebugScreen(
                     },
                 )
             }
-        }
-
-        Text(
-            text = stringResource(R.string.partial_transcript_label),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        Text(
-            text = state.partialTranscript.ifBlank { stringResource(R.string.no_partial_transcript) },
-        )
-
-        Text(
-            text = stringResource(R.string.final_transcript_label),
-            style = MaterialTheme.typography.labelLarge,
-        )
-        Text(
-            text = state.finalTranscript.ifBlank { stringResource(R.string.no_final_transcript) },
-        )
-
-        HorizontalDivider()
-        Text(
-            text = stringResource(R.string.typed_input_title),
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            text = stringResource(R.string.typed_input_explanation),
-            style = MaterialTheme.typography.bodySmall,
-        )
-        OutlinedTextField(
-            value = typedTranscript,
-            onValueChange = { typedTranscript = it },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text(stringResource(R.string.typed_transcript_label)) },
-            singleLine = true,
-            enabled = !isAudioBusy,
-        )
-        Button(
-            onClick = {
-                val submittedTranscript = typedTranscript.trim()
-                if (submittedTranscript.isNotEmpty()) {
-                    onTypedTranscriptSubmitted(submittedTranscript)
-                    typedTranscript = ""
-                }
-            },
-            enabled = typedTranscript.isNotBlank() && !isAudioBusy,
-        ) {
-            Text(stringResource(R.string.submit_transcript))
         }
 
         if (BuildConfig.DEBUG) {

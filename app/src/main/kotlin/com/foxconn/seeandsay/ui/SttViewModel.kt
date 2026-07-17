@@ -8,6 +8,7 @@ import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.config.AccessTokenProvider
 import com.foxconn.seeandsay.config.ApiKeyProvider
 import com.foxconn.seeandsay.config.CloudSpeechNotConfiguredException
+import com.foxconn.seeandsay.pipeline.VoicePipeline
 import com.foxconn.seeandsay.speech.AudioCaptureSource
 import com.foxconn.seeandsay.speech.AudioConfig
 import com.foxconn.seeandsay.speech.BoundedPcmBuffer
@@ -44,6 +45,8 @@ import kotlinx.coroutines.launch
  * @param debugV1SttClient existing V1 baseline used only by the DEBUG comparison harness.
  * @param debugChirp2SttClient V2 Chirp 2 client used only by the DEBUG comparison harness.
  * @param debugChirp3SttClient V2 Chirp 3 client used only by the DEBUG comparison harness.
+ * @param voicePipeline composition boundary generating and speaking one post-STT response.
+ * @param initialVoiceLoopEnabled initial automatic-reply toggle; production defaults to enabled.
  * @param monotonicClock clock used only for DEBUG latency metrics; tests inject virtual time.
  *
  * Public event methods are intended for Android's main thread. Capture and playback are children of
@@ -60,10 +63,13 @@ class SttViewModel(
     private val debugV1SttClient: SttClient,
     private val debugChirp2SttClient: SttClient,
     private val debugChirp3SttClient: SttClient,
+    private val voicePipeline: VoicePipeline,
+    initialVoiceLoopEnabled: Boolean = true,
     private val monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
 ) : ViewModel() {
 
-    private val mutableUiState = MutableStateFlow(SttUiState())
+    private val mutableUiState =
+        MutableStateFlow(SttUiState(voiceLoopEnabled = initialVoiceLoopEnabled))
     private var sessionJob: Job? = null
     private var pendingCapture = PendingCapture.None
     private var debugPcmBuffer: BoundedPcmBuffer? = null
@@ -108,6 +114,23 @@ class SttViewModel(
      */
     fun onStartRequested() {
         requestCapture(PendingCapture.Production)
+    }
+
+    /**
+     * Enables or disables automatic reply/TTS for subsequent completed transcript sessions.
+     *
+     * @param enabled `true` to run final/typed transcripts through VoicePipeline; `false` to retain
+     * pure STT/metrics behavior without assistant speech.
+     * @return This function has no return value.
+     *
+     * The synchronous main-thread event performs no I/O and owns no coroutine. Changes are ignored
+     * while reply generation or speech is active so an utterance cannot change policy mid-flight;
+     * disabling never cancels an already-started TTS request.
+     */
+    fun onVoiceLoopEnabledChanged(enabled: Boolean) {
+        val status = mutableUiState.value.status
+        if (status == SttStatus.Replying || status == SttStatus.Speaking) return
+        mutableUiState.update { it.copy(voiceLoopEnabled = enabled) }
     }
 
     /**
@@ -333,8 +356,10 @@ class SttViewModel(
      * @param transcript manually entered transcript; surrounding whitespace is ignored.
      * @return This function has no return value.
      *
-     * The method is synchronous, permission-independent, intended for the main thread, and owns no
-     * cancellable work. Blank input is ignored rather than treated as a failure.
+     * The reducer update is synchronous and permission-independent. When automatic reply is enabled,
+     * [replaceSession] launches the same lifecycle-owned post-transcript pipeline used after cloud
+     * STT; blank input is ignored rather than treated as a failure. Cancellation stops TTS and is not
+     * surfaced as an error.
      */
     fun submitTypedTranscript(transcript: String) {
         val normalizedTranscript = transcript.trim()
@@ -348,6 +373,9 @@ class SttViewModel(
                 isFinal = true,
             ),
         )
+        replaceSession {
+            runVoiceLoop(normalizedTranscript)
+        }
     }
 
     /**
@@ -515,7 +543,9 @@ class SttViewModel(
     private fun requestCapture(requestedCapture: PendingCapture) {
         if (
             mutableUiState.value.isDebugPlaybackActive ||
-                mutableUiState.value.isCloudSttSmokeTestRunning
+                mutableUiState.value.isCloudSttSmokeTestRunning ||
+                mutableUiState.value.status == SttStatus.Replying ||
+                mutableUiState.value.status == SttStatus.Speaking
         ) {
             return
         }
@@ -554,10 +584,12 @@ class SttViewModel(
      * Called on the main thread, it exposes Connecting and replaces the lifecycle-owned session.
      * After the prior session is joined it creates a bounded audio channel, starts capture as a
      * structured child, and collects [productionSttClient] results through [onSttResult]. Stop
-     * cancels only capture so channel completion can half-close/drain cloud results. A first
-     * non-blank transcript disarms the connection watchdog; Stop installs a separate drain bound.
-     * Cloud/device/timeout failures become recoverable Error, while replacement/lifecycle
-     * cancellation is rethrown and hidden.
+     * cancels only capture so channel completion can half-close/drain cloud results. All final
+     * segments from that one stream are accumulated, then passed to [runVoiceLoop] exactly once only
+     * after capture cancellation/join proves microphone release. A first non-blank transcript
+     * disarms the connection watchdog; Stop installs a separate drain bound. Cloud/device/timeout or
+     * reply/TTS failures become recoverable Error, while replacement/lifecycle cancellation is
+     * rethrown and hidden.
      */
     private fun startProductionCapture() {
         productionSessionId += 1L
@@ -584,6 +616,7 @@ class SttViewModel(
             }
 
             val audioChannel = Channel<ByteArray>(capacity = PRODUCTION_AUDIO_BUFFER_CAPACITY)
+            var completedSessionTranscript = ""
             try {
                 coroutineScope {
                     val captureJob =
@@ -629,14 +662,33 @@ class SttViewModel(
                                     }
                                 }
                                 onSttResult(result)
+                                if (result.isFinal) {
+                                    val finalSegment = result.transcript.trim()
+                                    if (finalSegment.isNotEmpty()) {
+                                        completedSessionTranscript =
+                                            appendFinalTranscript(
+                                                completedSessionTranscript,
+                                                finalSegment,
+                                            )
+                                    }
+                                }
                             }
                     } finally {
                         // Provider completion or failure must never leave the microphone running.
                         captureJob.cancelAndJoin()
                     }
                 }
+                // Cancel the STT watchdog and clear microphone ownership before invoking TTS. The
+                // stream may have completed naturally or after Stop, but both paths have joined the
+                // capture child at this point and therefore obey the echo rule.
+                cancelProductionTimeout(sessionId)
+                productionCaptureJob = null
+                productionStopRequested = false
                 mutableUiState.update {
                     it.copy(status = SttStatus.Completed, partialTranscript = "")
+                }
+                if (completedSessionTranscript.isNotBlank()) {
+                    runVoiceLoop(completedSessionTranscript)
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -649,6 +701,50 @@ class SttViewModel(
                 audioChannel.close()
                 productionCaptureJob = null
                 productionStopRequested = false
+            }
+        }
+    }
+
+    /**
+     * Runs the optional exactly-once reply/TTS tail for one completed transcript session.
+     *
+     * @param transcript newline-joined final segments from one production stream, or one typed final.
+     * @return after automatic speech completes, is disabled, or a recoverable failure is published.
+     *
+     * The function runs in the lifecycle-owned [sessionJob] after production capture has been joined.
+     * It exposes Replying, then Speaking through VoicePipeline's pre-speech callback, and returns to
+     * Idle only after TtsClient playback completes. Reply or TTS failure becomes recoverable Error;
+     * structured cancellation propagates unchanged so client cancellation stops playback without a
+     * user-visible failure. It never starts a microphone or automatic re-listen session.
+     */
+    private suspend fun runVoiceLoop(transcript: String) {
+        if (!mutableUiState.value.voiceLoopEnabled) return
+
+        mutableUiState.update {
+            it.copy(status = SttStatus.Replying, errorMessage = null)
+        }
+        try {
+            voicePipeline.replyAndSpeak(transcript) { reply ->
+                mutableUiState.update {
+                    it.copy(
+                        status = SttStatus.Speaking,
+                        lastReplyText = reply,
+                        errorMessage = null,
+                    )
+                }
+            }
+            mutableUiState.update {
+                it.copy(status = SttStatus.Idle, errorMessage = null)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            mutableUiState.update {
+                it.copy(
+                    status = SttStatus.Error,
+                    partialTranscript = "",
+                    errorMessage = VOICE_LOOP_ERROR,
+                )
             }
         }
     }
@@ -1284,6 +1380,8 @@ class SttViewModel(
      * @param debugV1SttClient existing V1 baseline used only by DEBUG smoke UI.
      * @param debugChirp2SttClient V2 Chirp 2 client used only by DEBUG smoke UI.
      * @param debugChirp3SttClient V2 Chirp 3 client used only by DEBUG smoke UI.
+     * @param voicePipeline production M1.3 reply/TTS composition owned by this ViewModel.
+     * @param initialVoiceLoopEnabled initial automatic-reply behavior, true in production.
      * @param monotonicClock debug latency clock; defaults to the platform monotonic source.
      *
      * Factory creation is synchronous on Android's main thread. It performs no audio I/O and owns no
@@ -1298,6 +1396,8 @@ class SttViewModel(
         private val debugV1SttClient: SttClient,
         private val debugChirp2SttClient: SttClient,
         private val debugChirp3SttClient: SttClient,
+        private val voicePipeline: VoicePipeline,
+        private val initialVoiceLoopEnabled: Boolean = true,
         private val monotonicClock: MonotonicClock = MonotonicClock.SYSTEM,
     ) : ViewModelProvider.Factory {
 
@@ -1325,13 +1425,15 @@ class SttViewModel(
                 debugV1SttClient,
                 debugChirp2SttClient,
                 debugChirp3SttClient,
+                voicePipeline,
+                initialVoiceLoopEnabled,
                 monotonicClock,
             ) as T
         }
     }
 
     /**
-     * Releases production and all DEBUG cloud clients when Android disposes this ViewModel.
+     * Releases production STT, integrated TTS, and all DEBUG cloud clients on disposal.
      *
      * @return This lifecycle callback has no return value.
      *
@@ -1341,6 +1443,7 @@ class SttViewModel(
      * RPCs, and throws no expected project-specific failure.
      */
     override fun onCleared() {
+        voicePipeline.close()
         (productionSttClient as? AutoCloseable)?.close()
         if (debugV1SttClient !== productionSttClient) {
             (debugV1SttClient as? AutoCloseable)?.close()
@@ -1371,6 +1474,7 @@ class SttViewModel(
         const val CAPTURE_ERROR_FALLBACK = "Microphone capture failed. Please retry."
         const val PLAYBACK_ERROR_FALLBACK = "Debug audio playback failed. Please retry."
         const val PRODUCTION_STT_ERROR = "Speech recognition failed. Please retry."
+        const val VOICE_LOOP_ERROR = "The assistant reply could not be spoken. Please retry."
         const val CLOUD_PROVIDER_ERROR =
             "Cloud speech authentication is unavailable. Check local configuration and retry."
         const val CLOUD_STT_SMOKE_ERROR = "Cloud STT test failed. Please retry."
