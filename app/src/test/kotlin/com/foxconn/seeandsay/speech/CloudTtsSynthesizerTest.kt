@@ -93,20 +93,23 @@ class CloudTtsSynthesizerTest {
         }
 
     /**
-     * Verifies the Gemini Flash-Lite selection carries model, Kore speaker, locale, and prompt.
+     * Verifies Gemini request fields and bearer precedence when both credentials are configured.
      *
      * @return This test has no return value.
      *
      * The in-process fake receives one unary request and returns fixed bytes without Google or
      * Android I/O. It fails if single-speaker Kore is incorrectly encoded as multi-speaker config,
-     * the preview model is omitted, or the existing LINEAR16/24 kHz playback contract changes.
+     * the preview model is omitted, the playback contract changes, an API key wins over the IAM
+     * bearer token, or both credentials are sent.
      */
     @Test
-    fun geminiFlashLiteRequestCarriesModelAndKoreSingleSpeaker() =
+    fun geminiFlashLiteRequestUsesModelKoreAndBearerPrecedence() =
         runBlocking {
             val service = SuccessfulTtsService(byteArrayOf(1, 2, 3))
             GrpcFixture(
                 service = service,
+                tokenProvider = AccessTokenProvider { "gemini-bearer-token" },
+                apiKeyProvider = ApiKeyProvider { "retained-api-key" },
                 synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
             ).use { fixture ->
                 fixture.client.synthesize("已進入設定")
@@ -120,6 +123,40 @@ class CloudTtsSynthesizerTest {
                 assertFalse(request.voice.hasMultiSpeakerVoiceConfig())
                 assertEquals(AudioEncoding.LINEAR16, request.audioConfig.audioEncoding)
                 assertEquals(GcpTtsConfig.SAMPLE_RATE_HZ, request.audioConfig.sampleRateHertz)
+                assertNull(fixture.metadata.apiKey)
+                assertEquals("Bearer gemini-bearer-token", fixture.metadata.authorization)
+                assertEquals("test-quota-project", fixture.metadata.quotaProjectId)
+            }
+        }
+
+    /**
+     * Verifies Gemini retains API-key fallback when no short-lived bearer token is configured.
+     *
+     * @return This test has no return value.
+     *
+     * The typed missing-token provider and fake API key run entirely in memory. The in-process
+     * service returns fixed bytes and captures metadata; the test fails if the fallback is removed,
+     * both credentials are sent, or missing bearer configuration becomes a crash/hang.
+     */
+    @Test
+    fun geminiFallsBackToApiKeyWhenBearerIsNotConfigured() =
+        runBlocking {
+            val service = SuccessfulTtsService(byteArrayOf(1))
+            val missingToken =
+                AccessTokenProvider {
+                    throw CloudSpeechNotConfiguredException()
+                }
+            GrpcFixture(
+                service = service,
+                tokenProvider = missingToken,
+                apiKeyProvider = ApiKeyProvider { "gemini-fallback-key" },
+                synthesisProfile = GcpTtsConfig.GEMINI_FLASH_LITE_KORE_PROFILE,
+            ).use { fixture ->
+                fixture.client.synthesize("你好")
+
+                assertEquals("gemini-fallback-key", fixture.metadata.apiKey)
+                assertNull(fixture.metadata.authorization)
+                assertNull(fixture.metadata.quotaProjectId)
             }
         }
 

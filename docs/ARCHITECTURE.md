@@ -174,6 +174,7 @@ Rules:
 ## 9. Configuration & secrets
 
 - Cloud credentials via `local.properties` → `BuildConfig`. **Never commit keys.** `.gitignore` covers `local.properties` and `*.json` service-account files.
+- Credential precedence follows provider authorization: STT V2 Chirp and Gemini-TTS prefer the short-lived OAuth bearer token because they are IAM-gated, while STT V1 and classic WaveNet TTS prefer the restricted API key. Fallback may retain the other configured mode, but every RPC sends exactly one credential. A service-account JSON remains outside the repository/APK and is used only by approved external tooling to mint the token.
 - `FeatureFlags` is the only place behavior toggles live: `LM_ENABLED` (default **false**), `CLOUD_TTS_ENABLED` (default true, false = on-device TTS), `TARGET_B_ENABLED` (default false).
 - Locale: primary zh-TW for STT/TTS and matching; keep locale a single constant.
 

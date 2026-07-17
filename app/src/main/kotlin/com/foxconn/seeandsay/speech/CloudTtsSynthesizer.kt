@@ -32,8 +32,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 /**
  * Synthesizes Taiwan-Mandarin speech bytes through Google Cloud Text-to-Speech V1.
  *
- * @param accessTokenProvider suspend provider for a current short-lived OAuth bearer token.
- * @param apiKeyProvider suspend provider for an optional API key, which takes precedence.
+ * @param accessTokenProvider suspend provider for a current short-lived OAuth bearer token. It
+ * takes precedence for IAM-gated Gemini-TTS profiles.
+ * @param apiKeyProvider suspend provider for an optional API key. It takes precedence for classic
+ * voices and remains the Gemini fallback when no bearer token is configured.
  * @param channel reusable managed channel; production owns one OkHttp TLS channel while tests inject
  * an in-process channel.
  * @param quotaProjectId optional non-secret quota project attached only to bearer requests.
@@ -115,38 +117,91 @@ class CloudTtsSynthesizer internal constructor(
     }
 
     /**
-     * Selects exactly one credential using API-key-first project precedence.
+     * Selects exactly one credential according to the immutable synthesis profile.
      *
      * @return API-key or bearer credential retained only for the next unary call.
      * @throws CloudTtsException when configuration is absent or a provider cannot supply a value.
      *
+     * Classic voices keep API-key-first behavior because the normal Cloud TTS path accepts the
+     * restricted company key. A non-blank model name identifies the IAM-gated Gemini path, which
+     * mirrors STT V2 Chirp by preferring the service-account bearer token. Exactly one credential is
+     * returned; no request ever mixes an API key and Authorization header.
+     *
      * The suspend function runs on the caller's coroutine and delegates any dispatcher choice to
      * the providers. Cancellation propagates unchanged; values and failures are never logged.
      */
-    private suspend fun selectCredential(): UnaryCredential {
-        val apiKey =
-            try {
-                apiKeyProvider.currentApiKey()?.trim()?.takeIf(String::isNotEmpty)
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                throw credentialProviderFailure(error)
-            }
-        if (apiKey != null) return UnaryCredential.ApiKey(apiKey)
+    private suspend fun selectCredential(): UnaryCredential =
+        if (synthesisProfile.modelName.isNullOrBlank()) {
+            selectApiKeyFirstCredential()
+        } else {
+            selectBearerFirstCredential()
+        }
 
-        val token =
-            try {
-                accessTokenProvider.currentToken().trim()
-            } catch (error: CloudSpeechNotConfiguredException) {
-                throw notConfiguredFailure()
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                throw credentialProviderFailure(error)
-            }
-        if (token.isEmpty()) throw notConfiguredFailure()
-        return UnaryCredential.BearerToken(token, quotaProjectId)
-    }
+    /**
+     * Selects the classic Cloud TTS credential while preserving established API-key precedence.
+     *
+     * @return API key when configured, otherwise a bearer token with optional quota attribution.
+     * @throws CloudTtsException when neither credential exists or a provider unexpectedly fails.
+     *
+     * The suspend function performs provider lookups sequentially on the caller's coroutine,
+     * propagates cancellation unchanged, performs no logging, and returns exactly one credential.
+     */
+    private suspend fun selectApiKeyFirstCredential(): UnaryCredential =
+        configuredApiKey()?.let { UnaryCredential.ApiKey(it) }
+            ?: configuredBearerToken()?.let { UnaryCredential.BearerToken(it, quotaProjectId) }
+            ?: throw notConfiguredFailure()
+
+    /**
+     * Selects the IAM-gated Gemini credential using the same bearer-first policy as STT V2 Chirp.
+     *
+     * @return bearer token when configured, otherwise the retained API-key fallback.
+     * @throws CloudTtsException when neither credential exists or a provider unexpectedly fails.
+     *
+     * The suspend function performs provider lookups sequentially on the caller's coroutine,
+     * propagates cancellation unchanged, performs no logging, and returns exactly one credential.
+     */
+    private suspend fun selectBearerFirstCredential(): UnaryCredential =
+        configuredBearerToken()?.let { UnaryCredential.BearerToken(it, quotaProjectId) }
+            ?: configuredApiKey()?.let { UnaryCredential.ApiKey(it) }
+            ?: throw notConfiguredFailure()
+
+    /**
+     * Reads and normalizes the optional API key without exposing its value outside this class.
+     *
+     * @return trimmed non-blank API key, or `null` when the provider is intentionally unconfigured.
+     * @throws CloudTtsException when the provider fails unexpectedly.
+     *
+     * The suspend helper delegates dispatcher choice to the provider, propagates cancellation,
+     * performs no I/O itself, and never logs the credential.
+     */
+    private suspend fun configuredApiKey(): String? =
+        try {
+            apiKeyProvider.currentApiKey()?.trim()?.takeIf(String::isNotEmpty)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            throw credentialProviderFailure(error)
+        }
+
+    /**
+     * Reads and normalizes the optional short-lived bearer token.
+     *
+     * @return trimmed non-blank token, or `null` for the typed not-configured condition.
+     * @throws CloudTtsException when the token provider fails for another reason.
+     *
+     * The suspend helper delegates dispatcher choice to the provider, propagates cancellation,
+     * performs no I/O itself, and never logs the token or Authorization header.
+     */
+    private suspend fun configuredBearerToken(): String? =
+        try {
+            accessTokenProvider.currentToken().trim().takeIf(String::isNotEmpty)
+        } catch (_: CloudSpeechNotConfiguredException) {
+            null
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            throw credentialProviderFailure(error)
+        }
 
     /**
      * Bridges one asynchronous unary gRPC call into cancellable coroutine completion.

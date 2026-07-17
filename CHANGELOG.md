@@ -15,6 +15,37 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-17] — M1.2 amendment: IAM bearer precedence for Gemini-TTS
+
+### Changed
+
+- Changed `speech/CloudTtsSynthesizer.kt` to select credentials by synthesis profile: Gemini-TTS
+  now prefers the short-lived OAuth bearer token and falls back to the existing API key, matching
+  STT V2 Chirp; classic WaveNet retains its existing API-key-first, bearer-fallback behavior.
+- Updated `local.properties.example`, `docs/ARCHITECTURE.md`, and `docs/demos/M1.2.md` to document
+  that one externally minted service-account token can serve IAM-gated Chirp and Gemini calls while
+  the existing company API key remains configured for STT V1 and WaveNet.
+
+### Added
+
+- Added in-process gRPC assertions in `speech/CloudTtsSynthesizerTest.kt` proving Gemini sends a
+  bearer token and no API-key header when both exist, and retains API-key-only fallback when the
+  bearer provider reports the typed not-configured condition.
+
+### Notes
+
+- Chose a non-blank Gemini model name as the credential-policy boundary because classic profiles
+  omit `modelName`, keeping Google/gRPC/auth details inside `speech/` and leaving `TtsClient`, UI,
+  and ViewModel contracts unchanged.
+- Every synthesis RPC still sends exactly one credential. Credential values and metadata are never
+  logged, and the service-account JSON remains outside the repository and APK.
+- Gemini authorization still requires `aiplatform.endpoints.predict` (for example through
+  `roles/aiplatform.user`); assigning the role does not remove the need to mint and inject a current
+  short-lived bearer token.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 90 unit tests
+  passed with zero failures/skips, lint completed with no blocking issue, and both APK variants
+  assembled successfully.
+
 ## [2026-07-17] — M1.3 amendment: contextual local replies and memory
 
 ### Added
