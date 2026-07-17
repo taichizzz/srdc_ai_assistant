@@ -52,7 +52,9 @@ import kotlinx.coroutines.launch
  * Public event methods are intended for Android's main thread. Capture and playback are children of
  * [viewModelScope]; replacing or clearing a session cancels and joins its predecessor so microphone
  * and playback resources are released in order. Device failures become recoverable UI errors, while
- * normal coroutine cancellation is never surfaced as an error.
+ * normal coroutine cancellation is never surfaced as an error. Production capture remains
+ * user-started push-to-talk, but the first non-blank final recognition result ends microphone input
+ * automatically; Stop remains an idempotent manual override and no session re-listens.
  */
 class SttViewModel(
     private val audioCaptureSource: AudioCaptureSource,
@@ -110,7 +112,9 @@ class SttViewModel(
      *
      * The method is synchronous until [startProductionCapture] launches lifecycle-owned work. It is
      * intended for the main thread. Permanent denial becomes recoverable UI state; granted access
-     * starts real microphone collection and cancels/joins any prior session before reading.
+     * starts real microphone collection and cancels/joins any prior session before reading. Once the
+     * provider emits a non-blank final result, that same session ends capture automatically; this
+     * method never starts an always-listening or automatic follow-up session.
      */
     fun onStartRequested() {
         requestCapture(PendingCapture.Production)
@@ -134,15 +138,17 @@ class SttViewModel(
     }
 
     /**
-     * Stops production microphone input while allowing the cloud stream to drain its final result.
+     * Manually stops production microphone input while allowing the cloud stream to drain.
      *
      * @return This function has no return value.
      *
      * Called on the main thread, this method immediately exposes `Stopping` and cancels only the
      * structured microphone child. Its `finally` releases AudioRecord before closing the bounded
-     * audio channel; CloudSttClient then half-closes and may emit a final result before the session
-     * becomes Completed. A five-second watchdog cancels a stalled drain and exposes recoverable
-     * Error. Repeated Stop is harmless, and normal cancellation is never an error.
+     * audio channel; CloudSttClient then half-closes and may emit another final result before the
+     * session becomes Completed. The same internal path is used when a non-blank provider final ends
+     * capture automatically. A five-second watchdog cancels a stalled drain and exposes recoverable
+     * Error. Repeated Stop or a Stop/final race is harmless, and normal cancellation is never an
+     * error.
      */
     fun onStopRequested() {
         val state = mutableUiState.value
@@ -161,17 +167,7 @@ class SttViewModel(
             return
         }
 
-        mutableUiState.update {
-            it.copy(status = SttStatus.Stopping, errorMessage = null)
-        }
-        if (!productionStopRequested) {
-            productionStopRequested = true
-            armProductionTimeout(
-                sessionId = productionSessionId,
-                timeoutMillis = FINAL_DRAIN_TIMEOUT_MS,
-            )
-        }
-        productionCaptureJob?.cancel()
+        requestProductionEnd(productionSessionId)
     }
 
     /**
@@ -386,8 +382,9 @@ class SttViewModel(
      *
      * The reducer is synchronous, intended for main-thread event delivery, and has no cancellation
      * behavior. Blank text is ignored. While a tracked production capture/drain is active, a final
-     * result preserves Listening/Stopping so the push-to-talk Stop control remains usable;
-     * permission-independent typed input still moves an inactive session to Completed. It performs
+     * result initially preserves Listening/Stopping; the production collector then routes its first
+     * non-blank final through the shared end request so capture stops without a second button press.
+     * Permission-independent typed input still moves an inactive session to Completed. It performs
      * no provider/network work and does not alter debug capture/playback flags.
      */
     fun onSttResult(result: SttResult) {
@@ -583,13 +580,13 @@ class SttViewModel(
      *
      * Called on the main thread, it exposes Connecting and replaces the lifecycle-owned session.
      * After the prior session is joined it creates a bounded audio channel, starts capture as a
-     * structured child, and collects [productionSttClient] results through [onSttResult]. Stop
-     * cancels only capture so channel completion can half-close/drain cloud results. All final
-     * segments from that one stream are accumulated, then passed to [runVoiceLoop] exactly once only
-     * after capture cancellation/join proves microphone release. A first non-blank transcript
-     * disarms the connection watchdog; Stop installs a separate drain bound. Cloud/device/timeout or
-     * reply/TTS failures become recoverable Error, while replacement/lifecycle cancellation is
-     * rethrown and hidden.
+     * structured child, and collects [productionSttClient] results through [onSttResult]. Manual
+     * Stop or the first non-blank final result cancels only capture so channel completion can
+     * half-close/drain cloud results. All final segments already in flight are accumulated, then
+     * passed to [runVoiceLoop] exactly once only after capture cancellation/join proves microphone
+     * release. A first non-blank transcript disarms the connection watchdog; either end path
+     * installs a separate drain bound. Cloud/device/timeout or reply/TTS failures become recoverable
+     * Error, while replacement/lifecycle cancellation is rethrown and hidden.
      */
     private fun startProductionCapture() {
         productionSessionId += 1L
@@ -670,6 +667,11 @@ class SttViewModel(
                                                 completedSessionTranscript,
                                                 finalSegment,
                                             )
+                                        // A provider final is already its end-of-utterance decision.
+                                        // Reusing manual Stop's drain path avoids adding a VAD/model
+                                        // dependency and, crucially, does not cancel this collector
+                                        // before any already-in-flight final segments can arrive.
+                                        requestProductionEnd(sessionId)
                                     }
                                 }
                             }
@@ -1153,6 +1155,35 @@ class SttViewModel(
     }
 
     /**
+     * Ends microphone input for the active production session and bounds cloud response draining.
+     *
+     * @param sessionId identity of the production session requesting manual or provider-final end.
+     * @return This function has no return value.
+     *
+     * Called on the main dispatcher by the Stop event or production result collector, this method
+     * performs no blocking work. It cancels only the structured capture child, whose `finally`
+     * releases AudioRecord and closes the bounded input channel; the parent collector remains alive
+     * for final responses. Repeated calls, multiple finals, and Stop/final races are idempotent. A
+     * stale session identity is ignored, and a five-second cancellable watchdog turns a stalled
+     * drain into recoverable Error rather than a hang.
+     */
+    private fun requestProductionEnd(sessionId: Long) {
+        if (productionSessionId != sessionId) return
+
+        mutableUiState.update {
+            it.copy(status = SttStatus.Stopping, errorMessage = null)
+        }
+        if (!productionStopRequested) {
+            productionStopRequested = true
+            armProductionTimeout(
+                sessionId = sessionId,
+                timeoutMillis = FINAL_DRAIN_TIMEOUT_MS,
+            )
+        }
+        productionCaptureJob?.cancel()
+    }
+
+    /**
      * Arms a lifecycle-owned lack-of-progress watchdog for one production STT session.
      *
      * @param sessionId monotonic identity of the production session being guarded.
@@ -1487,7 +1518,7 @@ class SttViewModel(
         /** Maximum wait for the first non-blank production recognition result. */
         const val FIRST_RESPONSE_TIMEOUT_MS = 15_000L
 
-        /** Maximum wait for cloud stream completion after production microphone Stop. */
+        /** Maximum wait for cloud completion after manual Stop or provider-final endpointing. */
         const val FINAL_DRAIN_TIMEOUT_MS = 5_000L
 
         /** Fixed non-secret recovery message shared by both production watchdogs. */

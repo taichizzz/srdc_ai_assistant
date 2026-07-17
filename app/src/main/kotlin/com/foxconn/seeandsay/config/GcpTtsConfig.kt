@@ -39,7 +39,7 @@ object GcpTtsConfig {
     const val SERVICE_HOST: String = "texttospeech.googleapis.com"
 
     /** BCP-47 language code for Mandarin as spoken in Taiwan. */
-    const val LANGUAGE_CODE: String = "cmn-TW"
+    const val LANGUAGE_CODE: String = "cmn-tw"
 
     /** Current Taiwan-Mandarin premium voice selected for deterministic evaluation. */
     const val VOICE_NAME: String = "cmn-TW-Wavenet-A"

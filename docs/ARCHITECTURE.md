@@ -146,6 +146,7 @@ Idle → Listening → Transcribing → Reading → Deciding → Acting → Veri
 Rules:
 
 - Implemented as a `sealed class PipelineState`, driven by one coroutine in `VoicePipeline`. **No component may bypass the state machine to call another component directly.**
+- Voice initiation remains push-to-talk: the user explicitly presses **Start**. During that one user-started session, the first non-blank final `SttResult` is the provider's end-of-utterance signal and must route through the same microphone-stop/cloud-drain path as manual **Stop**. Stop remains an idempotent override when the provider is slow or the user wants to end early. Final-result endpointing must not add a wake word, always-listening mode, barge-in, or automatic re-listen after TTS.
 - `Verifying` = take a **fresh** snapshot after the action and check the expected change (target screen title present, previous element gone, or edit field now containing the text). A click without a verified change is a **failed** step.
 - `Speaking` must release the mic first (see Section 8, echo problem).
 

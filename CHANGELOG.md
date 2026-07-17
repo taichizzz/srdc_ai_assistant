@@ -15,6 +15,48 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-17] — M1.3 amendment: provider-final automatic endpointing
+
+### Added
+
+- Added an idempotent production-session end operation in `ui/SttViewModel.kt`, shared by manual
+  **Stop** and the first non-blank final `SttResult`. It cancels only microphone capture, keeps the
+  cloud collector alive to drain already-in-flight finals, and retains the existing five-second
+  recoverable drain timeout.
+- Added focused fake/virtual-time coverage in `ui/SttViewModelTest.kt` proving that partial results
+  keep listening, a final result ends capture without manual Stop, microphone/input cleanup precedes
+  TTS, and an automatically triggered stalled drain reaches Error with working Retry.
+
+### Changed
+
+- Changed the production M1.3 interaction from **Start → speak → Stop → automatic reply** to
+  **Start → speak → provider final → automatic stop/drain/reply**. Manual Stop remains available as
+  an idempotent early-end/slow-provider override and follows the exact same resource-release path.
+- Updated `docs/ARCHITECTURE.md` to bind the new semantics without weakening push-to-talk: Start is
+  still explicit, and final-result endpointing adds no wake word, pre-Start recording, barge-in, or
+  automatic re-listen after TTS.
+- Updated `docs/demos/M1.3.md` with explicit hands-off `你好` acceptance, manual Stop/final-race
+  acceptance, automatic-drain timeout recovery, and the limitation that live behavior depends on
+  Google emitting a non-blank final result.
+
+### Notes
+
+- Chose the existing provider-neutral `SttResult.isFinal` signal instead of adding WebRTC VAD,
+  Sherpa-ONNX, a model asset, or a new contract because M1.3 targets one short command and Google
+  already supplies an end-of-utterance decision. A local `SpeechEndpointer` remains a follow-up only
+  if real-device final timing is too slow or inconsistent.
+- Kept all final segments already in flight and retained exactly one ReplyEngine/TTS invocation per
+  completed stream; repeated finals and a Stop/final race cannot re-arm the drain watchdog or start
+  duplicate speech.
+- Preserved the echo rule structurally: a provider final cancels the MicRecorder child, waits for its
+  `finally`/audio-channel close and cloud completion, and only then enters Replying/Speaking.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 83 unit tests
+  passed with zero failures/skips, lint completed with no blocking issue, and both APK variants
+  assembled successfully.
+- Automatic end timing and audible reply still require a live production V1 credential, network,
+  and real microphone/speaker device; deterministic JVM fakes cannot prove Google's endpoint timing
+  or physical AudioRecord release.
+
 ## [2026-07-16] — M1.3 Phase 2: automatic voice interaction loop
 
 ### Added

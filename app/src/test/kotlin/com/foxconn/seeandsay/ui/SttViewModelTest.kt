@@ -413,16 +413,17 @@ class SttViewModelTest {
         }
 
     /**
-     * Verifies production interim replacement and final append/partial-clear reduction.
+     * Verifies production partials keep listening while a final ends capture automatically.
      *
      * @return This test has no return value.
      *
      * [runTest] uses a gated fake SttClient on the controlled main dispatcher so interim state can
-     * be asserted before final delivery. It performs no device/network I/O; completing the gate lets
-     * the finite stream finish and structured cleanup cancels the inert microphone child.
+     * be asserted before final delivery. It performs no device/network I/O; completing the gate
+     * commits the final, triggers the shared end path without manual Stop, and lets structured
+     * cleanup cancel the inert microphone child.
      */
     @Test
-    fun productionPartialReplacesAndFinalAppendsOnce() =
+    fun productionPartialDoesNotEndSessionAndFinalEndsAutomatically() =
         runTest(mainDispatcherRule.dispatcher) {
             val allowFinal = CompletableDeferred<Unit>()
             val productionClient =
@@ -665,6 +666,41 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies provider-final automatic ending cannot remain in cloud draining indefinitely.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] emits one final result and then suspends the fake RPC without a manual Stop. Virtual
+     * time must expire the shared drain watchdog, cancel capture/RPC work, expose recoverable Error,
+     * and let Retry restore Idle. It performs no real delay, microphone, credential, or network I/O.
+     */
+    @Test
+    fun automaticFinalDrainTimesOutAndRetryRecovers() =
+        runTest(mainDispatcherRule.dispatcher) {
+            val stalledAfterFinalClient =
+                FakeSttClient {
+                    flow {
+                        emit(SttResult("你好", isFinal = true))
+                        awaitCancellation()
+                    }
+                }
+            val viewModel = createViewModel(productionSttClient = stalledAfterFinalClient)
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            viewModel.onStartRequested()
+            assertEquals("你好", viewModel.uiState.value.finalTranscript)
+            assertEquals(SttStatus.Stopping, viewModel.uiState.value.status)
+
+            advanceUntilIdle()
+
+            assertEquals(SttStatus.Error, viewModel.uiState.value.status)
+            assertTrue(viewModel.uiState.value.errorMessage?.contains("timed out") == true)
+            viewModel.onRetryRequested()
+            assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
+            assertNull(viewModel.uiState.value.errorMessage)
+        }
+
+    /**
      * Verifies partials never speak and multiple final segments produce one combined reply request.
      *
      * @return This test has no return value.
@@ -752,23 +788,26 @@ class SttViewModelTest {
         }
 
     /**
-     * Verifies production capture cleanup and cloud half-close finish before integrated TTS begins.
+     * Verifies an automatic final releases capture and drains input before integrated TTS begins.
      *
      * @return This test has no return value.
      *
-     * [runTest] records fake lifecycle events with no hardware/network work. Stop must unwind capture,
-     * complete audio input, receive the final transcript, and only then invoke TTS, proving the echo
-     * handoff order rather than relying on UI button disabling alone.
+     * [runTest] records fake lifecycle events with no hardware/network work. The provider final must
+     * trigger capture release without manual Stop, complete audio input, and only then invoke TTS,
+     * proving the echo handoff order rather than relying on UI button disabling alone.
      */
     @Test
-    fun productionMicrophoneIsReleasedBeforeVoiceReplyStarts() =
+    fun automaticFinalReleasesProductionMicrophoneBeforeVoiceReplyStarts() =
         runTest(mainDispatcherRule.dispatcher) {
             val events = mutableListOf<String>()
+            val captureStarted = CompletableDeferred<Unit>()
             val audioSource =
                 AudioCaptureSource {
                     flow {
                         try {
                             emit(byteArrayOf(1, 2, 3, 4))
+                            events += "capture-started"
+                            captureStarted.complete(Unit)
                             awaitCancellation()
                         } finally {
                             events += "capture-released"
@@ -778,9 +817,10 @@ class SttViewModelTest {
             val productionClient =
                 FakeSttClient { audio ->
                     flow {
+                        captureStarted.await()
+                        emit(SttResult("你好", isFinal = true))
                         audio.collect()
                         events += "audio-input-completed"
-                        emit(SttResult("你好", isFinal = true))
                     }
                 }
             val ttsClient = FakeTtsClient { events += "tts-started" }
@@ -794,10 +834,13 @@ class SttViewModelTest {
             viewModel.onMicrophonePermissionObserved(isGranted = true)
             viewModel.onStartRequested()
 
-            viewModel.onStopRequested()
-
             assertEquals(
-                listOf("capture-released", "audio-input-completed", "tts-started"),
+                listOf(
+                    "capture-started",
+                    "capture-released",
+                    "audio-input-completed",
+                    "tts-started",
+                ),
                 events,
             )
             assertEquals(SttStatus.Idle, viewModel.uiState.value.status)
