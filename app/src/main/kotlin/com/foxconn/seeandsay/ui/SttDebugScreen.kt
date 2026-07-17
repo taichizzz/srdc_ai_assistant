@@ -37,6 +37,7 @@ import com.foxconn.seeandsay.R
  * @param onStop invoked when the user requests microphone release and final-result draining.
  * @param onDebugRecordAndPlayback invoked to start debug recording or stop it and play retained PCM.
  * @param onCloudSttSmokeTest invoked to start or stop the isolated DEBUG cloud round trip.
+ * @param onMainSttEngineSelected selects the recognizer for the next main-pipeline Start.
  * @param onDebugSttEngineSelected invoked to select only the next DEBUG comparison client.
  * @param onCloudConfigurationCheck invoked to inspect local key/token presence without a network call.
  * @param onRetry invoked to clear a recoverable error.
@@ -64,6 +65,7 @@ fun SttDebugScreen(
     onStop: () -> Unit,
     onDebugRecordAndPlayback: () -> Unit,
     onCloudSttSmokeTest: () -> Unit,
+    onMainSttEngineSelected: (MainSttEngine) -> Unit,
     onDebugSttEngineSelected: (DebugSttEngine) -> Unit,
     onCloudConfigurationCheck: () -> Unit,
     onRetry: () -> Unit,
@@ -174,6 +176,42 @@ fun SttDebugScreen(
                     stringResource(R.string.no_assistant_reply)
                 },
         )
+
+        if (BuildConfig.DEBUG) {
+            Text(
+                text = stringResource(R.string.main_stt_engine_selector),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            MainSttEngine.entries.forEach { engine ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RadioButton(
+                        selected = state.selectedMainSttEngine == engine,
+                        onClick = { onMainSttEngineSelected(engine) },
+                        enabled = !isAudioBusy,
+                    )
+                    Text(
+                        text = engine.displayName,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+            }
+            Text(
+                text =
+                    stringResource(
+                        R.string.main_stt_engine_selected,
+                        state.selectedMainSttEngine.apiVersion,
+                        state.selectedMainSttEngine.model,
+                    ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(R.string.main_stt_engine_explanation),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
 
         HorizontalDivider()
         Text(

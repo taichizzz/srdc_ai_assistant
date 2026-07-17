@@ -41,7 +41,8 @@ import kotlinx.coroutines.launch
  * @param pcmAudioPlayer raw PCM output used only after debug capture has fully stopped.
  * @param accessTokenProvider provider-neutral, suspendable source for cloud bearer tokens.
  * @param apiKeyProvider provider-neutral, suspendable source for an optional plain API key.
- * @param productionSttClient provider-neutral recognizer used by the normal Start/Stop flow.
+ * @param productionSttClient V1 latest_short recognizer and main-pipeline default.
+ * @param productionChirp3SttClient V2 Chirp 3 recognizer available to DEBUG main-pipeline runs.
  * @param debugV1SttClient existing V1 baseline used only by the DEBUG comparison harness.
  * @param debugChirp2SttClient V2 Chirp 2 client used only by the DEBUG comparison harness.
  * @param debugChirp3SttClient V2 Chirp 3 client used only by the DEBUG comparison harness.
@@ -64,6 +65,7 @@ class SttViewModel(
     private val accessTokenProvider: AccessTokenProvider,
     private val apiKeyProvider: ApiKeyProvider,
     private val productionSttClient: SttClient,
+    private val productionChirp3SttClient: SttClient,
     private val debugV1SttClient: SttClient,
     private val debugChirp2SttClient: SttClient,
     private val debugChirp3SttClient: SttClient,
@@ -256,6 +258,36 @@ class SttViewModel(
     }
 
     /**
+     * Selects the recognizer used by the next user-started main-pipeline STT session.
+     *
+     * @param engine V1 latest_short or V2 Chirp 3.
+     * @return This function has no return value.
+     *
+     * The synchronous DEBUG-only main-thread event performs no microphone or network work. It is
+     * ignored while any STT/audio/reply session is active so one utterance cannot switch providers
+     * after capture begins. Selection owns no coroutine and has no expected failure mode.
+     */
+    fun onMainSttEngineSelected(engine: MainSttEngine) {
+        val state = mutableUiState.value
+        if (
+            !BuildConfig.DEBUG ||
+                engine == state.selectedMainSttEngine ||
+                state.status == SttStatus.RequestingPermission ||
+                state.status == SttStatus.Connecting ||
+                state.status == SttStatus.Listening ||
+                state.status == SttStatus.Stopping ||
+                state.status == SttStatus.Replying ||
+                state.status == SttStatus.Speaking ||
+                state.isDebugRecording ||
+                state.isDebugPlaybackActive ||
+                state.isCloudSttSmokeTestRunning
+        ) {
+            return
+        }
+        mutableUiState.update { it.copy(selectedMainSttEngine = engine) }
+    }
+
+    /**
      * Selects the API/model used by the next DEBUG cloud comparison run.
      *
      * @param engine V1 baseline, V2 Chirp 2, or V2 Chirp 3 selection.
@@ -263,7 +295,7 @@ class SttViewModel(
      *
      * The synchronous main-thread event is ignored while any cloud smoke run is active so a single
      * run cannot mix engines or corrupt its metrics label. It performs no audio/network work, owns
-     * no coroutine, throws no project-specific failure, and never changes production's V1 client.
+     * no coroutine, throws no project-specific failure, and never changes the main-pipeline choice.
      */
     fun onDebugSttEngineSelected(engine: DebugSttEngine) {
         val state = mutableUiState.value
@@ -624,8 +656,8 @@ class SttViewModel(
      *
      * Called on the main thread, it exposes Connecting and replaces the lifecycle-owned session.
      * After the prior session is joined it creates a bounded audio channel, starts capture as a
-     * structured child, and collects [productionSttClient] results through [onSttResult]. Manual
-     * Stop or the first non-blank final result cancels only capture so channel completion can
+     * structured child, and collects the selected production [SttClient] through [onSttResult].
+     * Manual Stop or the first non-blank final result cancels only capture so channel completion can
      * half-close/drain cloud results. All final segments already in flight are accumulated, then
      * passed to [runVoiceLoop] exactly once only after capture cancellation/join proves microphone
      * release. A first non-blank transcript disarms the connection watchdog; either end path
@@ -635,6 +667,8 @@ class SttViewModel(
     private fun startProductionCapture() {
         productionSessionId += 1L
         val sessionId = productionSessionId
+        val selectedEngine = mutableUiState.value.selectedMainSttEngine
+        val sessionSttClient = selectedProductionSttClient(selectedEngine)
         cancelProductionTimeout()
         productionStopRequested = false
         mutableUiState.update {
@@ -691,7 +725,7 @@ class SttViewModel(
                     )
                     var hasReceivedTranscript = false
                     try {
-                        productionSttClient
+                        sessionSttClient
                             .stream(audioChannel.receiveAsFlow())
                             .collect { result ->
                                 if (!hasReceivedTranscript && result.transcript.isNotBlank()) {
@@ -1032,6 +1066,21 @@ class SttViewModel(
             DebugSttEngine.V1LatestShort -> debugV1SttClient
             DebugSttEngine.V2Chirp2 -> debugChirp2SttClient
             DebugSttEngine.V2Chirp3 -> debugChirp3SttClient
+        }
+
+    /**
+     * Resolves the provider-neutral recognizer snapshotted for one production session.
+     *
+     * @param engine main-pipeline selection captured before Connecting is published.
+     * @return V1 latest_short or V2 Chirp 3 client injected by the composition root.
+     *
+     * This pure main-thread-confined lookup performs no I/O, suspension, or cancellation. The
+     * exhaustive match prevents an unsupported model from silently replacing the V1 default.
+     */
+    private fun selectedProductionSttClient(engine: MainSttEngine): SttClient =
+        when (engine) {
+            MainSttEngine.LatestShort -> productionSttClient
+            MainSttEngine.Chirp3 -> productionChirp3SttClient
         }
 
     /**
@@ -1451,7 +1500,8 @@ class SttViewModel(
      * cloud authentication.
      * @param apiKeyProvider lazy provider for the debug-only API-key presence check and cloud
      * authentication.
-     * @param productionSttClient provider-neutral recognizer used by production Start/Stop.
+     * @param productionSttClient V1 latest_short recognizer used by default production Start/Stop.
+     * @param productionChirp3SttClient V2 Chirp 3 recognizer for DEBUG main-pipeline selection.
      * @param debugV1SttClient existing V1 baseline used only by DEBUG smoke UI.
      * @param debugChirp2SttClient V2 Chirp 2 client used only by DEBUG smoke UI.
      * @param debugChirp3SttClient V2 Chirp 3 client used only by DEBUG smoke UI.
@@ -1469,6 +1519,7 @@ class SttViewModel(
         private val accessTokenProvider: AccessTokenProvider,
         private val apiKeyProvider: ApiKeyProvider,
         private val productionSttClient: SttClient,
+        private val productionChirp3SttClient: SttClient,
         private val debugV1SttClient: SttClient,
         private val debugChirp2SttClient: SttClient,
         private val debugChirp3SttClient: SttClient,
@@ -1499,6 +1550,7 @@ class SttViewModel(
                 accessTokenProvider = accessTokenProvider,
                 apiKeyProvider = apiKeyProvider,
                 productionSttClient = productionSttClient,
+                productionChirp3SttClient = productionChirp3SttClient,
                 debugV1SttClient = debugV1SttClient,
                 debugChirp2SttClient = debugChirp2SttClient,
                 debugChirp3SttClient = debugChirp3SttClient,
@@ -1517,23 +1569,31 @@ class SttViewModel(
      *
      * Android invokes this on the main thread after lifecycle-owned coroutines are cancelled. The
      * generic AutoCloseable checks keep UI independent of Google/gRPC types. Identity checks close
-     * shared V1 only once and each distinct V2 channel once; close is non-suspending, cancels active
-     * RPCs, and throws no expected project-specific failure.
+     * clients shared between main and comparison selectors only once; close is non-suspending,
+     * cancels active RPCs, and throws no expected project-specific failure.
      */
     override fun onCleared() {
         voicePipeline.close()
         (productionSttClient as? AutoCloseable)?.close()
-        if (debugV1SttClient !== productionSttClient) {
+        if (productionChirp3SttClient !== productionSttClient) {
+            (productionChirp3SttClient as? AutoCloseable)?.close()
+        }
+        if (
+            debugV1SttClient !== productionSttClient &&
+                debugV1SttClient !== productionChirp3SttClient
+        ) {
             (debugV1SttClient as? AutoCloseable)?.close()
         }
         if (
             debugChirp2SttClient !== productionSttClient &&
+                debugChirp2SttClient !== productionChirp3SttClient &&
                 debugChirp2SttClient !== debugV1SttClient
         ) {
             (debugChirp2SttClient as? AutoCloseable)?.close()
         }
         if (
             debugChirp3SttClient !== productionSttClient &&
+                debugChirp3SttClient !== productionChirp3SttClient &&
                 debugChirp3SttClient !== debugV1SttClient &&
                 debugChirp3SttClient !== debugChirp2SttClient
         ) {

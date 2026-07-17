@@ -18,7 +18,7 @@ enum class DebugSttEngine(
     val model: String,
     val displayName: String,
 ) {
-    /** Existing V1 short-command baseline; production remains permanently wired to this engine. */
+    /** Existing V1 short-command baseline and default main-pipeline engine. */
     V1LatestShort(GcpSttConfig.API_VERSION, GcpSttConfig.MODEL, "V1 (latest_short)"),
 
     /** Google Speech-to-Text V2 Chirp 2 evaluation path. */

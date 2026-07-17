@@ -15,6 +15,37 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-17] — M1.3 amendment: main-pipeline STT selector
+
+### Added
+
+- Added `ui/MainSttEngine.kt` with exactly two provider-neutral DEBUG choices: V1
+  `latest_short` and V2 `chirp_3`.
+- Added **Speech recognition model (main pipeline)** controls beside the live transcript and a
+  focused ViewModel test covering default routing, idle selection, and rejected mid-session changes.
+
+### Changed
+
+- Changed `SttViewModel` to snapshot the selected main recognizer before each production Start and
+  route that complete session through the injected V1 or Chirp 3 `SttClient` without changing the
+  recognition contracts, result reducer, timeout behavior, or automatic reply/TTS tail.
+- Changed `MainActivity` composition so the existing Chirp 3 client can serve the selected main
+  route while remaining available to the independent three-engine comparison harness.
+- Updated `docs/ARCHITECTURE.md`, `docs/demos/M1.1.md`, and `docs/demos/M1.3.md` with selector scope,
+  credentials, release behavior, and live acceptance steps.
+
+### Notes
+
+- Kept V1 `latest_short` as the default and release-only route. The selector is DEBUG-only so model
+  evaluation cannot silently change release recognition behavior.
+- Model changes are blocked during permission, capture, draining, reply, TTS, loopback, and cloud
+  smoke-test work; the selected value applies only to the next user-started session.
+- Chirp 2 remains available only in the comparison/metrics harness; the main selector intentionally
+  contains only the two user-requested options.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 92 unit tests
+  passed with zero failures/skips, lint completed with no blocking issue, and both APK variants
+  assembled successfully.
+
 ## [2026-07-17] — M1.3 amendment: Roxanne spoken identity
 
 ### Changed

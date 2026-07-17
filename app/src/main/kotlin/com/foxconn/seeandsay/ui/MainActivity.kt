@@ -40,11 +40,11 @@ import com.foxconn.seeandsay.speech.SwitchableTtsClient
  * The activity translates platform permission results into provider-neutral ViewModel events. It
  * performs lifecycle and UI work on Android's main thread, launches no coroutine itself, and owns
  * no microphone or network coroutine itself. The ViewModel owns cancellation of the injected audio
- * components, the local-only credential-presence check, V1 production recognition, and the M1.3
- * ReplyEngine/TTS tail through VoicePipeline. A separate TtsViewModel owns an independent cloud-
- * first Taiwan-Mandarin client for standalone DEBUG M1.2 controls, avoiding cross-ViewModel client
- * ownership. Permission requests can be denied or suppressed by Android; both outcomes become
- * recoverable UI state rather than escaping.
+ * components, the local-only credential-presence check, selectable V1/Chirp 3 DEBUG production
+ * recognition, and the M1.3 ReplyEngine/TTS tail through VoicePipeline. A separate TtsViewModel
+ * owns an independent cloud-first Taiwan-Mandarin client for standalone DEBUG M1.2 controls,
+ * avoiding cross-ViewModel client ownership. Permission requests can be denied or suppressed by
+ * Android; both outcomes become recoverable UI state rather than escaping.
  */
 class MainActivity : ComponentActivity() {
 
@@ -115,6 +115,7 @@ class MainActivity : ComponentActivity() {
             accessTokenProvider = accessTokenProvider,
             apiKeyProvider = apiKeyProvider,
             productionSttClient = cloudSttClient,
+            productionChirp3SttClient = chirp3Client,
             debugV1SttClient = cloudSttClient,
             debugChirp2SttClient = chirp2Client,
             debugChirp3SttClient = chirp3Client,
@@ -243,6 +244,7 @@ class MainActivity : ComponentActivity() {
                         onStop = sttViewModel::onStopRequested,
                         onDebugRecordAndPlayback = ::handleDebugRecordAndPlaybackRequest,
                         onCloudSttSmokeTest = ::handleCloudSttSmokeTestRequest,
+                        onMainSttEngineSelected = sttViewModel::onMainSttEngineSelected,
                         onDebugSttEngineSelected = sttViewModel::onDebugSttEngineSelected,
                         onCloudConfigurationCheck =
                             sttViewModel::onCloudConfigurationCheckRequested,

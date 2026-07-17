@@ -413,6 +413,64 @@ class SttViewModelTest {
         }
 
     /**
+     * Verifies the main selector offers latest_short and Chirp 3 without changing an active run.
+     *
+     * @return This test has no return value.
+     *
+     * [runTest] uses provider-neutral fakes and a controlled dispatcher with no device/network I/O.
+     * The V1 stream remains active until Stop, proving an attempted mid-session switch is ignored;
+     * the accepted idle Chirp 3 selection then routes the next Start to the V2 fake exactly once.
+     */
+    @Test
+    fun mainSttSelectorRoutesNextStartAndIgnoresChangesWhileListening() =
+        runTest(mainDispatcherRule.dispatcher) {
+            var latestShortCalls = 0
+            var chirp3Calls = 0
+            val latestShortClient =
+                FakeSttClient { audio ->
+                    flow {
+                        latestShortCalls += 1
+                        audio.collect()
+                    }
+                }
+            val chirp3Client =
+                FakeSttClient {
+                    flow {
+                        chirp3Calls += 1
+                        emit(SttResult("Chirp 3 production", isFinal = true, confidence = 0.9f))
+                    }
+                }
+            val viewModel =
+                createViewModel(
+                    productionSttClient = latestShortClient,
+                    productionChirp3SttClient = chirp3Client,
+                )
+            viewModel.onMicrophonePermissionObserved(isGranted = true)
+
+            assertEquals(MainSttEngine.LatestShort, viewModel.uiState.value.selectedMainSttEngine)
+            viewModel.onStartRequested()
+            assertEquals(SttStatus.Listening, viewModel.uiState.value.status)
+            assertEquals(1, latestShortCalls)
+
+            viewModel.onMainSttEngineSelected(MainSttEngine.Chirp3)
+            assertEquals(MainSttEngine.LatestShort, viewModel.uiState.value.selectedMainSttEngine)
+
+            viewModel.onStopRequested()
+            advanceUntilIdle()
+            assertEquals(SttStatus.Completed, viewModel.uiState.value.status)
+
+            viewModel.onMainSttEngineSelected(MainSttEngine.Chirp3)
+            assertEquals(MainSttEngine.Chirp3, viewModel.uiState.value.selectedMainSttEngine)
+            viewModel.onStartRequested()
+            advanceUntilIdle()
+
+            assertEquals(1, latestShortCalls)
+            assertEquals(1, chirp3Calls)
+            assertEquals("Chirp 3 production", viewModel.uiState.value.finalTranscript)
+            assertEquals(SttStatus.Completed, viewModel.uiState.value.status)
+        }
+
+    /**
      * Verifies production partials keep listening while a final ends capture automatically.
      *
      * @return This test has no return value.
@@ -1021,7 +1079,8 @@ class SttViewModelTest {
      * @param pcmAudioPlayer fake raw PCM sink for the test scenario.
      * @param accessTokenProvider fake suspend token source for configuration checks.
      * @param apiKeyProvider fake suspend API-key source for configuration checks.
-     * @param productionSttClient deterministic recognizer for normal Start/Stop sessions.
+     * @param productionSttClient deterministic latest_short recognizer for normal Start/Stop.
+     * @param productionChirp3SttClient deterministic Chirp 3 recognizer for main-pipeline selection.
      * @param debugCloudSttClient deterministic V1 baseline stream for smoke-test events.
      * @param debugChirp2SttClient deterministic Chirp 2 stream; defaults to the V1 fake.
      * @param debugChirp3SttClient deterministic Chirp 3 stream; defaults to the V1 fake.
@@ -1048,6 +1107,7 @@ class SttViewModelTest {
             FakeSttClient { audio ->
                 flow { audio.collect() }
             },
+        productionChirp3SttClient: SttClient = productionSttClient,
         debugCloudSttClient: SttClient = FakeSttClient(),
         debugChirp2SttClient: SttClient = debugCloudSttClient,
         debugChirp3SttClient: SttClient = debugCloudSttClient,
@@ -1063,6 +1123,7 @@ class SttViewModelTest {
             accessTokenProvider = accessTokenProvider,
             apiKeyProvider = apiKeyProvider,
             productionSttClient = productionSttClient,
+            productionChirp3SttClient = productionChirp3SttClient,
             debugV1SttClient = debugCloudSttClient,
             debugChirp2SttClient = debugChirp2SttClient,
             debugChirp3SttClient = debugChirp3SttClient,

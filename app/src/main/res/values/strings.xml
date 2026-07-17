@@ -21,7 +21,7 @@
     <string name="cloud_configuration_check">Check cloud configuration</string>
     <string name="cloud_configuration_checking">Checking configuration…</string>
     <string name="cloud_stt_smoke_title">DEBUG Cloud STT test</string>
-    <string name="cloud_stt_smoke_explanation">Streams the same 16 kHz microphone PCM through the selected evaluation engine. Production Start remains V1.</string>
+    <string name="cloud_stt_smoke_explanation">Streams the same 16 kHz microphone PCM through the selected evaluation engine. This comparison selector is independent from the main-pipeline selector.</string>
     <string name="cloud_stt_engine_selector">Evaluation engine</string>
     <string name="cloud_stt_metrics_title">Testing metrics — automatic criteria</string>
     <string name="cloud_stt_metrics_engine">Engine/model: %1$s / %2$s</string>
@@ -66,6 +66,9 @@
     <string name="no_final_transcript">No final transcript</string>
     <string name="assistant_reply_label">Assistant reply (current/last)</string>
     <string name="no_assistant_reply">No assistant reply yet</string>
+    <string name="main_stt_engine_selector">Speech recognition model (main pipeline)</string>
+    <string name="main_stt_engine_selected">Main pipeline selected: %1$s / %2$s</string>
+    <string name="main_stt_engine_explanation">Controls the next production Start. latest_short is the default; Chirp 3 requires its V2 project, location, and accepted credential. This is separate from the DEBUG comparison test below.</string>
     <string name="typed_input_title">Typed-input fallback</string>
     <string name="typed_input_explanation">Works without microphone permission and uses the same final-transcript and automatic-reply path as speech recognition.</string>
     <string name="typed_transcript_label">Transcript text</string>

@@ -83,6 +83,7 @@ enum class CloudConfigurationStatus {
  * @property finalTranscript accumulated committed recognition text.
  * @property lastReplyText generated assistant response for the current or latest completed loop.
  * @property voiceLoopEnabled whether completed production/typed transcripts automatically reply.
+ * @property selectedMainSttEngine recognizer used by the next production Start in DEBUG builds.
  * @property selectedVoiceLoopTtsModel cloud model used by the next automatic main-pipeline reply.
  * @property errorMessage recoverable user-facing failure, or `null` when no failure is active.
  * @property microphonePermission current platform permission outcome.
@@ -108,6 +109,7 @@ data class SttUiState(
     val finalTranscript: String = "",
     val lastReplyText: String = "",
     val voiceLoopEnabled: Boolean = true,
+    val selectedMainSttEngine: MainSttEngine = MainSttEngine.LatestShort,
     val selectedVoiceLoopTtsModel: TtsModelOption = TtsModelOption.WaveNet,
     val errorMessage: String? = null,
     val microphonePermission: MicrophonePermissionStatus =
