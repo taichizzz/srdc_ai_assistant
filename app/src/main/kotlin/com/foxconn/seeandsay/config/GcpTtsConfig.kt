@@ -42,7 +42,7 @@ object GcpTtsConfig {
     const val LANGUAGE_CODE: String = "cmn-tw"
 
     /** Current Taiwan-Mandarin premium voice selected for deterministic evaluation. */
-    const val VOICE_NAME: String = "cmn-TW-Wavenet-A"
+    const val VOICE_NAME: String = "cmn-TW-Wavenet-B"
 
     /** Gemini-TTS low-latency single-speaker model offered as a DEBUG evaluation alternative. */
     const val GEMINI_FLASH_LITE_MODEL: String = "gemini-2.5-flash-lite-preview-tts"
