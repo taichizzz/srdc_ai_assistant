@@ -1,9 +1,11 @@
 package com.foxconn.seeandsay.pipeline
 
+import com.foxconn.seeandsay.normalization.TextNormalizer
+
 /**
  * Generates contextual deterministic Mandarin replies from a local intent vocabulary.
  *
- * The engine normalizes every transcript with [TranscriptNormalizer], classifies greetings,
+ * The engine normalizes every transcript with [TextNormalizer], classifies greetings,
  * identity/help/thanks, repeat/cancel, and simple open/play target requests, then emits a useful
  * response. Unknown and missing-target input receive guidance instead of silence. [memory] retains
  * only bounded process-local context and never claims a requested UI action succeeded.
@@ -36,7 +38,7 @@ class RuleBasedReplyEngine(
     override fun replyTo(transcript: String): String =
         synchronized(replyLock) {
             val intent =
-                LocalReplyIntentClassifier.classify(TranscriptNormalizer.normalize(transcript))
+                LocalReplyIntentClassifier.classify(TextNormalizer.normalize(transcript))
             val reply = replyFor(intent, transcript)
             memory.rememberExchange(transcript, reply)
             reply

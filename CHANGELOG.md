@@ -15,6 +15,43 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-21] — M2 Accessibility Bridge Phase 1: deterministic text decisions
+
+### Added
+
+- Added the previously absent frozen pure declarations in `bridge/UiBridge.kt` and
+  `bridge/model/ScreenSnapshot.kt`, matching the architecture's four bridge operations and
+  screen/element fields without adding Android imports or an accessibility implementation.
+- Added `decision/Decision.kt` and `decision/TextMatcher.kt` with normalized exact-match
+  precedence, substring fallback, clickable-only filtering, explicit `NoMatch`, and spoken
+  ambiguity instead of selecting the first duplicate.
+- Added `bridge/FakeUiBridge.kt` under JVM test sources with realistic 設定 / 音樂 / 導航 screen
+  data, scripted snapshot progression, configurable action results, and ordered call recording.
+- Added `decision/TextMatcherTest.kt` and `bridge/FakeUiBridgeTest.kt` coverage for normalized exact
+  and noisy/full-width matching, tier precedence, substring fallback, ambiguity, no-match,
+  non-clickable exclusion, shared reply-engine normalization, and fake call ordering.
+
+### Changed
+
+- Promoted `pipeline/TranscriptNormalizer.kt` to the module-neutral
+  `normalization/TextNormalizer.kt`; `pipeline/RuleBasedReplyEngine.kt`, its existing JVM tests,
+  and `decision/TextMatcher.kt` now consume that single implementation.
+
+### Notes
+
+- The bridge contracts did not exist when Phase 1 began, so only the declaration/data files were
+  created. No `AccessibilityService`, node-tree walking, action implementation, manifest entry,
+  verification wait, Android import, coordinate, external resource ID, or fixed sleep was added.
+- Exact normalized matches are evaluated as a complete tier before substring matches so a precise
+  label cannot become ambiguous merely because another clickable label contains it. Multiple
+  matches in the selected tier return `Speak("有兩個『…』，你要哪一個？")` rather than a click.
+- NFKC, Unicode punctuation/whitespace removal, and locale-stable lowercase remain the supported
+  normalization policy. No partial Traditional/Simplified conversion was introduced because the
+  project has no existing conversion table/library and semantic aliases belong to Phase 2.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 101 JVM unit
+  tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
+  release APK variants assembled successfully.
+
 ## [2026-07-17] — M1.3 amendment: main-pipeline STT selector
 
 ### Added

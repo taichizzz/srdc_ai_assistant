@@ -1,5 +1,6 @@
 package com.foxconn.seeandsay.pipeline
 
+import com.foxconn.seeandsay.normalization.TextNormalizer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -223,8 +224,8 @@ class RuleBasedReplyEngineTest {
      */
     @Test
     fun normalizationProducesStableComparisonKeys() {
-        assertEquals("helloivi", TranscriptNormalizer.normalize("  ＨＥＬＬＯ，　IVI！ "))
-        assertEquals("你好", TranscriptNormalizer.normalize("\u00A0你 好？！\u3000"))
-        assertEquals("", TranscriptNormalizer.normalize(" ！？... "))
+        assertEquals("helloivi", TextNormalizer.normalize("  ＨＥＬＬＯ，　IVI！ "))
+        assertEquals("你好", TextNormalizer.normalize("\u00A0你 好？！\u3000"))
+        assertEquals("", TextNormalizer.normalize(" ！？... "))
     }
 }
