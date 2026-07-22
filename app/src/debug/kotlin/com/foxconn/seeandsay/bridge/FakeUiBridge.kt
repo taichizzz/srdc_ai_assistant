@@ -4,7 +4,7 @@ import com.foxconn.seeandsay.bridge.model.ScreenElement
 import com.foxconn.seeandsay.bridge.model.ScreenSnapshot
 
 /**
- * Pure JVM [UiBridge] test double that returns scripted screens and records action ordering.
+ * DEBUG/JVM [UiBridge] fake that returns scripted screens and records action ordering.
  *
  * @param snapshots non-empty sequence returned by successive [readScreen] calls; after the final
  * snapshot, subsequent reads keep returning that final value.
@@ -15,7 +15,7 @@ import com.foxconn.seeandsay.bridge.model.ScreenSnapshot
  * with [IllegalArgumentException]; its suspending methods do not delay or intercept cancellation.
  */
 class FakeUiBridge(
-    snapshots: List<ScreenSnapshot> = listOf(realisticHomeScreen()),
+    snapshots: List<ScreenSnapshot> = verificationDemoScreens(),
     private val actionResult: Boolean = true,
 ) : UiBridge {
 
@@ -123,6 +123,23 @@ class FakeUiBridge(
     companion object {
 
         /**
+         * Builds the default DEBUG verification sequence: home, settings before edit, settings
+         * after edit, then home again.
+         *
+         * @return immutable scripted snapshots demonstrating Click, SetText, and Back verification.
+         *
+         * This pure factory performs no I/O, accessibility work, waiting, timer, or suspension and
+         * has no expected failure.
+         */
+        fun verificationDemoScreens(): List<ScreenSnapshot> =
+            listOf(
+                realisticHomeScreen(),
+                realisticSettingsScreen(),
+                realisticSettingsScreen(enteredText = "Roxanne"),
+                realisticHomeScreen(),
+            )
+
+        /**
          * Builds a realistic launcher snapshot containing 設定, 音樂, and 導航 actions.
          *
          * @return immutable scripted home screen with stable element identifiers.
@@ -138,6 +155,28 @@ class FakeUiBridge(
                         ScreenElement(0, "設定", clickable = true, editable = false, listOf(0, 120, 240, 200)),
                         ScreenElement(1, "音樂", clickable = true, editable = false, listOf(0, 220, 240, 300)),
                         ScreenElement(2, "導航", clickable = true, editable = false, listOf(0, 320, 240, 400)),
+                    ),
+            )
+
+        /**
+         * Builds a settings snapshot with one editable profile-name field.
+         *
+         * @param enteredText current visible field value; blank represents the pre-edit state.
+         * @return immutable scripted settings screen with stable element identifiers.
+         *
+         * This pure factory performs no I/O, accessibility work, waiting, timer, or suspension and
+         * has no expected failure for ordinary text.
+         */
+        fun realisticSettingsScreen(enteredText: String = ""): ScreenSnapshot =
+            ScreenSnapshot(
+                screen = "settings",
+                capturedAt = 1_789_000_000_100,
+                elements =
+                    listOf(
+                        ScreenElement(0, "設定", clickable = false, editable = false, emptyList()),
+                        ScreenElement(1, "顯示", clickable = true, editable = false, emptyList()),
+                        ScreenElement(2, "音效", clickable = true, editable = false, emptyList()),
+                        ScreenElement(3, enteredText, clickable = false, editable = true, emptyList()),
                     ),
             )
     }

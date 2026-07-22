@@ -28,10 +28,30 @@ val debugGcpSttAccessToken =
         ?: localProperties.getProperty("GCP_STT_ACCESS_TOKEN").orEmpty()
 val debugGcpSttApiKey = localProperties.getProperty("GCP_STT_API_KEY").orEmpty()
 val debugGcpProjectId = localProperties.getProperty("GCP_STT_PROJECT_ID").orEmpty()
+val debugGcpLmProjectId = localProperties.getProperty("GCP_LM_PROJECT_ID").orEmpty()
+val debugGcpLmLocation =
+    localProperties
+        .getProperty("GCP_LM_LOCATION")
+        .orEmpty()
+        .trim()
+        .ifEmpty { "us-central1" }
+val debugGcpLmModel =
+    localProperties
+        .getProperty("GCP_LM_MODEL")
+        .orEmpty()
+        .trim()
+        .ifEmpty { "gemini-2.5-flash" }
 /** DEBUG cloud-first TTS override; absent or malformed local values retain the default true. */
 val debugCloudTtsEnabled =
     localProperties
         .getProperty("CLOUD_TTS_ENABLED")
+        ?.trim()
+        ?.toBooleanStrictOrNull()
+        ?: true
+/** DEBUG LM override; absent or malformed local values retain the LM-first default true. */
+val debugLmEnabled =
+    localProperties
+        .getProperty("LM_ENABLED")
         ?.trim()
         ?.toBooleanStrictOrNull()
         ?: true
@@ -75,7 +95,11 @@ android {
         buildConfigField("String", "GCP_STT_API_KEY", "\"\"")
         buildConfigField("String", "GCP_STT_PROJECT_ID", "\"\"")
         buildConfigField("String", "GCP_STT_LOCATION", "\"\"")
+        buildConfigField("String", "GCP_LM_PROJECT_ID", "\"\"")
+        buildConfigField("String", "GCP_LM_LOCATION", "\"\"")
+        buildConfigField("String", "GCP_LM_MODEL", "\"\"")
         buildConfigField("boolean", "CLOUD_TTS_ENABLED", "true")
+        buildConfigField("boolean", "LM_ENABLED", "true")
     }
 
     buildTypes {
@@ -100,7 +124,23 @@ android {
                 "GCP_STT_LOCATION",
                 debugGcpSttLocation.asBuildConfigStringLiteral(),
             )
+            buildConfigField(
+                "String",
+                "GCP_LM_PROJECT_ID",
+                debugGcpLmProjectId.asBuildConfigStringLiteral(),
+            )
+            buildConfigField(
+                "String",
+                "GCP_LM_LOCATION",
+                debugGcpLmLocation.asBuildConfigStringLiteral(),
+            )
+            buildConfigField(
+                "String",
+                "GCP_LM_MODEL",
+                debugGcpLmModel.asBuildConfigStringLiteral(),
+            )
             buildConfigField("boolean", "CLOUD_TTS_ENABLED", debugCloudTtsEnabled.toString())
+            buildConfigField("boolean", "LM_ENABLED", debugLmEnabled.toString())
         }
         release {
             isMinifyEnabled = false
@@ -152,6 +192,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.api.grpc:grpc-google-cloud-speech-v1:4.74.0")
     implementation("com.google.api.grpc:grpc-google-cloud-speech-v2:4.74.0")
     implementation("com.google.api.grpc:grpc-google-cloud-texttospeech-v1:2.92.0")
@@ -163,6 +205,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("io.grpc:grpc-inprocess")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

@@ -43,8 +43,9 @@ import com.foxconn.seeandsay.speech.SwitchableTtsClient
  * components, the local-only credential-presence check, selectable V1/Chirp 3 DEBUG production
  * recognition, and the M1.3 ReplyEngine/TTS tail through VoicePipeline. A separate TtsViewModel
  * owns an independent cloud-first Taiwan-Mandarin client for standalone DEBUG M1.2 controls,
- * avoiding cross-ViewModel client ownership. Permission requests can be denied or suppressed by
- * Android; both outcomes become recoverable UI state rather than escaping.
+ * avoiding cross-ViewModel client ownership. A DEBUG-only matching inspector lazily receives a
+ * provider-neutral scripted UiBridge; release never creates it. Permission requests can be denied
+ * or suppressed by Android; both outcomes become recoverable UI state rather than escaping.
  */
 class MainActivity : ComponentActivity() {
 
@@ -194,6 +195,17 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /**
+     * Owns the DEBUG-only provider-neutral snapshot and text-decision inspector state.
+     *
+     * Android creates this ViewModel lazily only when the DEBUG composition reads it. The current
+     * variant factory supplies a pure scripted bridge; release composition never accesses this
+     * delegate. Screen-read failures remain recoverable state and no action method is invoked.
+     */
+    private val matchingInspectorViewModel: MatchingInspectorViewModel by viewModels {
+        MatchingInspectorViewModel.Factory(createDebugUiBridge())
+    }
+
     private val microphonePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             // A false rationale result after a completed request means Android will not present the
@@ -234,6 +246,12 @@ class MainActivity : ComponentActivity() {
                     // initializing an on-device engine that no release code can invoke in M1.2.
                     TtsUiState()
                 }
+            val matchingInspectorState =
+                if (BuildConfig.DEBUG) {
+                    matchingInspectorViewModel.uiState.collectAsStateWithLifecycle().value
+                } else {
+                    null
+                }
 
             MaterialTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
@@ -266,6 +284,35 @@ class MainActivity : ComponentActivity() {
                         onDebugTtsModelSelected = ttsViewModel::onDebugModelSelected,
                         onTtsStop = {
                             if (BuildConfig.DEBUG) ttsViewModel.onStopRequested()
+                        },
+                        matchingInspectorState = matchingInspectorState,
+                        onMatchingInspectorRefresh = {
+                            if (BuildConfig.DEBUG) {
+                                matchingInspectorViewModel.onRefreshRequested()
+                            }
+                        },
+                        onMatchingCommandSubmitted = { command ->
+                            if (BuildConfig.DEBUG) {
+                                matchingInspectorViewModel.onCommandSubmitted(command)
+                            }
+                        },
+                        onVerificationBeforeSelected = {
+                            if (BuildConfig.DEBUG) {
+                                matchingInspectorViewModel.onVerificationBeforeSelected()
+                            }
+                        },
+                        onVerificationAfterSelected = {
+                            if (BuildConfig.DEBUG) {
+                                matchingInspectorViewModel.onVerificationAfterSelected()
+                            }
+                        },
+                        onVerificationRequested = { kind, expectedText ->
+                            if (BuildConfig.DEBUG) {
+                                matchingInspectorViewModel.onVerificationRequested(
+                                    kind,
+                                    expectedText,
+                                )
+                            }
                         },
                     )
                 }

@@ -23,6 +23,26 @@ GCP_STT_LOCATION=asia-southeast1
 # instead of packaging a developer token.
 GCP_STT_ACCESS_TOKEN=
 
+# DEBUG BUILDS ONLY: Vertex AI project used by the primary LM intent interpreter. Keep this
+# distinct from GCP_STT_PROJECT_ID unless both APIs are intentionally enabled and billed in the
+# same project. Release builds keep this empty.
+GCP_LM_PROJECT_ID=
+
+# DEBUG BUILDS ONLY: regional Vertex AI endpoint. The Phase 5 mock-tested default is us-central1.
+# Confirm regional model availability and company data-residency policy before live acceptance.
+GCP_LM_LOCATION=us-central1
+
+# DEBUG BUILDS ONLY: stable Flash-tier publisher model. gemini-2.5-flash is the documented GA model
+# selected for Phase 5; override this only after confirming another model is enabled in the project.
+GCP_LM_MODEL=gemini-2.5-flash
+
+# Vertex uses the short-lived bearer token above; no service-account JSON is read by the app.
+# Mint a token locally with one of:
+#   gcloud auth print-access-token
+#   gcloud auth print-access-token --impersonate-service-account=NAME@PROJECT.iam.gserviceaccount.com
+# The caller needs Vertex AI inference permission in GCP_LM_PROJECT_ID. Never place a service-account
+# JSON, private key, refresh token, or other long-lived credential in this file or the APK.
+
 # DEBUG BUILDS ONLY: plain Google Cloud API key string (commonly starts with AIza...).
 # V1 STT and classic WaveNet TTS prefer this key. V2 Chirp and Gemini-TTS prefer the bearer token
 # above because their model calls are IAM-gated, while retaining the key as a fallback when no token
@@ -36,3 +56,9 @@ GCP_STT_API_KEY=
 # false skips all Cloud TTS credential/network work and uses the device engine directly.
 # Release/default builds use true. This is not a credential and must contain only true or false.
 CLOUD_TTS_ENABLED=true
+
+# DEBUG behavior flag: true uses the LM as the primary interpreter for every non-empty utterance;
+# false skips provider construction and uses deterministic TextMatcher fallback only. Production and
+# release default to true, while release still carries empty LM project/location/model/token fields;
+# missing configuration must recover through deterministic matching rather than crash.
+LM_ENABLED=true

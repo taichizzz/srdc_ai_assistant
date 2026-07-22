@@ -50,6 +50,12 @@ import com.foxconn.seeandsay.R
  * @param onTtsSpeak invoked with DEBUG text to pass to the injected provider-neutral TtsClient.
  * @param onDebugTtsModelSelected invoked to select the cloud model for the next DEBUG Speak.
  * @param onTtsStop invoked to cancel the active standalone DEBUG TTS request.
+ * @param matchingInspectorState DEBUG-only snapshot/decision state, or `null` in release.
+ * @param onMatchingInspectorRefresh invoked to read a fresh provider-neutral screen snapshot.
+ * @param onMatchingCommandSubmitted invoked with DEBUG text for pure tiered matching.
+ * @param onVerificationBeforeSelected captures the shown scripted snapshot as before-state.
+ * @param onVerificationAfterSelected captures the shown scripted snapshot as after-state.
+ * @param onVerificationRequested previews comparison for an explicitly selected decision.
  * @return This composable emits UI and has no return value.
  *
  * Composition and callbacks run on Android's main thread. The composable launches no coroutine,
@@ -76,6 +82,12 @@ fun SttDebugScreen(
     onTtsSpeak: (String) -> Unit,
     onDebugTtsModelSelected: (TtsModelOption) -> Unit,
     onTtsStop: () -> Unit,
+    matchingInspectorState: MatchingInspectorUiState?,
+    onMatchingInspectorRefresh: () -> Unit,
+    onMatchingCommandSubmitted: (String) -> Unit,
+    onVerificationBeforeSelected: () -> Unit,
+    onVerificationAfterSelected: () -> Unit,
+    onVerificationRequested: (VerificationDecisionKind, String) -> Unit,
 ) {
     var typedTranscript by rememberSaveable { mutableStateOf("") }
     var ttsText by rememberSaveable { mutableStateOf("") }
@@ -638,6 +650,17 @@ fun SttDebugScreen(
             Text(
                 text = stringResource(R.string.microphone_rationale),
                 style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        if (BuildConfig.DEBUG && matchingInspectorState != null) {
+            MatchingInspectorSection(
+                state = matchingInspectorState,
+                onRefresh = onMatchingInspectorRefresh,
+                onCommandSubmitted = onMatchingCommandSubmitted,
+                onVerificationBeforeSelected = onVerificationBeforeSelected,
+                onVerificationAfterSelected = onVerificationAfterSelected,
+                onVerificationRequested = onVerificationRequested,
             )
         }
     }

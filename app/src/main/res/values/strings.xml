@@ -81,4 +81,28 @@
     <string name="retry">Retry</string>
     <string name="open_settings">Open settings</string>
     <string name="microphone_rationale">Microphone access is needed only when you press Start. Retry when you are ready to grant it.</string>
+    <string name="matching_inspector_title">DEBUG matching inspector</string>
+    <string name="matching_inspector_explanation">Reads the injected provider-neutral snapshot and previews a tiered Decision only. It does not perform the action.</string>
+    <string name="matching_inspector_refresh">Refresh snapshot</string>
+    <string name="matching_inspector_loading">Reading snapshot…</string>
+    <string name="matching_inspector_no_snapshot">No screen snapshot loaded</string>
+    <string name="matching_inspector_snapshot">Screen: %1$s · capturedAt: %2$d</string>
+    <string name="matching_inspector_element">[%1$d] %2$s · clickable=%3$s · editable=%4$s</string>
+    <string name="matching_inspector_command">Command to match</string>
+    <string name="matching_inspector_match">Preview Decision</string>
+    <string name="matching_inspector_decision">Decision: %1$s</string>
+    <string name="matching_inspector_confidence">Tier: %1$s · score: %2$.3f</string>
+    <string name="matching_inspector_no_tier">None</string>
+    <string name="verification_inspector_title">DEBUG verification comparison</string>
+    <string name="verification_inspector_explanation">Select the current scripted snapshot as before or after, use Refresh snapshot to advance the fake, then preview Click, SetText, or Back. No action or waiting is performed.</string>
+    <string name="verification_inspector_selection">Before: %1$s · After: %2$s</string>
+    <string name="verification_inspector_use_before">Use current as before</string>
+    <string name="verification_inspector_use_after">Use current as after</string>
+    <string name="verification_inspector_expected_text">Expected SetText value</string>
+    <string name="verification_inspector_decision_prompt">Choose inspection-only Decision</string>
+    <string name="verification_inspector_click">Click</string>
+    <string name="verification_inspector_set_text">SetText</string>
+    <string name="verification_inspector_back">Back</string>
+    <string name="verification_inspector_decision">Decision: %1$s</string>
+    <string name="verification_inspector_result">VerificationResult: %1$s</string>
 </resources>

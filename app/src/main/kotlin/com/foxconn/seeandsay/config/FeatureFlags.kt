@@ -18,4 +18,14 @@ object FeatureFlags {
      * `local.properties`. Reading is synchronous, non-blocking, and never exposes a credential.
      */
     val CLOUD_TTS_ENABLED: Boolean = BuildConfig.CLOUD_TTS_ENABLED
+
+    /**
+     * Enables the primary LM intent path when true; false forces deterministic matching fallback.
+     *
+     * The value defaults to true for LM-first production behavior and may be overridden for DEBUG
+     * through gitignored `local.properties`. Empty release LM configuration contains no credential;
+     * provider/config failure must enter deterministic fallback. Reading is synchronous and performs
+     * no provider initialization, network request, I/O, coroutine launch, or cancellation work.
+     */
+    val LM_ENABLED: Boolean = BuildConfig.LM_ENABLED
 }

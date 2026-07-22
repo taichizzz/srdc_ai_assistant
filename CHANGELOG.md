@@ -15,6 +15,157 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-22] — Decision layer Phase 6: LM-first interpretation and semantic grounding
+
+### Added
+
+- Added `controlQuery` to the pure `decision/UserGoal.kt` adjustment/open-target goals. It carries
+  only a model-provided semantic control description and structurally cannot carry an element
+  index, coordinate, provider type, or executable UI function.
+- Added index-free `LmScreenContext` / `LmScreenElement` values and the pure
+  `ScreenSnapshot.toLmScreenContext()` projection in `decision/LmClient.kt`. Only screen identity,
+  element text, clickable, and editable cross the LM seam; snapshot indices and bounds remain local
+  for later grounding and validation.
+- Added JVM coverage for enabled direct-command LM invocation, `control_query` validation and
+  grounding, index-free provider context, absent-control speech, normalized-empty input, disabled
+  fallback, auth/network/timeout/malformed-output fallback, and low-confidence clarification.
+
+### Changed
+
+- Inverted `decision/DefaultDecisionEngine.kt` to normalize → LM interpretation → local goal
+  grounding → action validation for every enabled non-empty utterance. `IntentResult.Clarify`
+  remains speech and `NotOnThisScreen` remains an honest limitation; neither path guesses or falls
+  through to raw-command matching.
+- Demoted raw-transcript `TextMatcher` use to the deterministic path selected only when the LM flag
+  is false, provider/interpreter construction or completion fails, or strict interpretation returns
+  NoMatch. This fallback preserves direct commands such as 「打開設定」 without credentials/network.
+- Extended `decision/LmIntentInterpreter.kt` to require the exact seven-field schema including
+  nullable `control_query`. A present query must be a non-blank string, is trimmed before entering
+  `UserGoal`, and remains covered by whole-response rejection for indices, UI calls, and coordinates.
+- Changed `decision/GoalPlanner.kt` to prefer `controlQuery`, then OpenTarget `target`, then small
+  residual goal semantics. Model/target descriptions use the existing TextMatcher exact → substring
+  → alias → fuzzy tiers, including clickable filtering and option-naming ambiguity handling.
+- Changed `LM_ENABLED` to default true in `app/build.gradle.kts` and updated
+  `config/FeatureFlags.kt` / `local.properties.example` for LM-first production behavior. The flag
+  remains DEBUG-overridable; release keeps its LM project/location/model/token fields empty, and a
+  missing configuration recovers through deterministic matching.
+- Updated `decision/DecisionEngine.kt`, `decision/IntentInterpreter.kt`, `decision/LmClient.kt`, and
+  `config/GcpLmConfig.kt` KDoc to describe primary interpretation, index-free context, failure
+  fallback, and cancellation behavior.
+
+### Notes
+
+- This phase explicitly supersedes the fallback-style ordering recorded in Phases 4–5. The LM now
+  answers “what does the user want?” first; local Kotlin still grounds, authorizes, executes through
+  the bridge, and verifies. TextMatcher remains important but no longer serves as the normal
+  raw-utterance interpreter when the LM is enabled.
+- `control_query` is semantic guidance, not authority. The model can suggest 「文字大小」, but the
+  app independently runs tiered matching against the current snapshot and then revalidates range,
+  uniqueness, clickable/editable capability before emitting an action. Several candidates become a
+  named clarification; no candidate becomes NotOnThisScreen.
+- Residual adjustment knowledge is intentionally small and used only when a goal has no model query:
+  text-size concepts 文字大小 / 字型大小 / font size with 放大 / 增加 / increase and 縮小 /
+  減少 / decrease; volume concepts 音量 / volume with 調高 / 增加 / volume up and 調低 /
+  減少 / volume down; brightness concepts 亮度 / brightness with 調亮 / 增加 / increase and
+  調暗 / 減少 / decrease. It supports non-LM/future pre-resolved goals without recreating a
+  transcript intent table.
+- Three prior ordering assertions were deliberately inverted rather than deleted: a direct command
+  now proves the LM was constructed/called, duplicate-label ambiguity is produced while grounding
+  an LM-resolved goal instead of bypassing the LM, and the disabled case now proves 「打開設定」
+  still clicks deterministically instead of merely returning NoMatch. All previous safety,
+  interpreter, matcher, planner, provider, and verification coverage remains.
+- Cancellation still propagates unchanged; ordinary factory/provider/schema failure falls back.
+  LocalDecisionValidator and ActionVerification were not modified or weakened. Off-screen targets
+  still do not trigger Back, HOME, app launch, coordinates, or speculative multi-step behavior.
+- Generated release BuildConfig was inspected after assembly: `LM_ENABLED=true` while
+  `GCP_LM_PROJECT_ID`, `GCP_LM_LOCATION`, `GCP_LM_MODEL`, and `GCP_STT_ACCESS_TOKEN` are empty. No
+  service-account material, Android accessibility import, timer, delay, fixed sleep, bridge change,
+  speech change, or second normalizer was introduced.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 163 JVM unit
+  tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
+  release APK variants assembled successfully.
+
+## [2026-07-22] — Decision layer Phase 5: local goal planning and Vertex LM client
+
+### Added
+
+- Added `decision/GoalPlanner.kt` with typed Actionable, NotOnThisScreen,
+  NeedsClarification, and Unsupported results. OpenTarget reuses `TextMatcher`; text-size, volume,
+  and brightness goals use centralized normalized concept/direction keyword sets and never select
+  equally plausible controls silently.
+- Added `decision/DecisionEngine.kt`, `decision/DefaultDecisionEngine.kt`, and
+  `decision/LocalDecisionValidator.kt`. The engine composes deterministic snapshot matching,
+  optional lazy intent interpretation, current-screen goal planning, and final index/capability
+  validation without executing an action.
+- Added `config/GcpLmConfig.kt` for non-secret debug project/location/model settings and
+  `decision/LmClientFailure.kt` for fixed NotConfigured, Authentication, Permission, Quota,
+  Network, Timeout, and Unknown failure categories.
+- Added `decision/VertexLmClient.kt`, a cancellable Vertex AI REST/OkHttp adapter using the existing
+  short-lived `AccessTokenProvider`. It calls the regional publisher-model `generateContent` path,
+  requests `application/json`, sends an OpenAPI-compatible `responseSchema`, extracts only the
+  structured candidate text, and never logs tokens, headers, response bodies, or credentials.
+- Added `decision/GoalPlannerTest.kt` and `decision/DefaultDecisionEngineTest.kt` coverage for local
+  planning, ambiguity, honest off-screen results, LM bypass/gating, interpretation composition,
+  final action validation, factory/provider failure, and cancellation.
+- Added `decision/VertexLmClientTest.kt` with loopback MockWebServer coverage for the REST path,
+  bearer/schema request shape, end-to-end interpreter parsing, 401/403/429/504 mapping, bounded
+  client timeout, in-flight cancellation, and zero construction/request when the flag is false.
+
+### Changed
+
+- Added debug-only `GCP_LM_PROJECT_ID`, `GCP_LM_LOCATION`, and `GCP_LM_MODEL` BuildConfig fields.
+  Debug defaults to `us-central1` and the documented GA `gemini-2.5-flash` model while keeping the
+  LM project distinct and required; default/release variants keep all three fields empty and
+  `LM_ENABLED=false`.
+- Updated `local.properties.example` with separate Vertex settings and local short-lived token
+  minting via `gcloud auth print-access-token`, including optional service-account impersonation.
+  The app continues to read only the injected bearer token and never reads or packages a
+  service-account JSON/private key.
+- Added explicit OkHttp 4.12 transport and test-only MockWebServer dependencies. REST was selected
+  over Vertex gRPC stubs because the project already uses JSON for the strict interpreter schema,
+  REST confines the small provider wire surface to one class, and it avoids adding credential/ADC
+  or generated Vertex client libraries to the APK.
+
+### Notes
+
+- Part A was completed and independently verified before any Part B dependency/configuration work:
+  150 JVM tests passed together with `assembleDebug`, `lintDebug`, and `assembleRelease`.
+- Adjustment aliases are normalized once through the shared `TextNormalizer`: text-size concepts
+  are 字型大小 / 文字大小 / 字體大小 / 字型尺寸 / font size / text size, with 放大 / 增大 /
+  加大 / 調大 / increase and 縮小 / 減小 / 調小 / decrease directions; volume concepts are
+  音量 / 聲音大小 / volume, with 調高 / 提高 / 增加 / 大聲 / increase / volume up and
+  調低 / 降低 / 減少 / 小聲 / decrease / volume down; brightness concepts are 亮度 /
+  螢幕亮度 / 屏幕亮度 / brightness, with 調亮 / 增亮 / 提高 / 增加 / increase and 調暗 /
+  降低 / 減少 / decrease.
+- Direction-specific controls outrank concept-only controls. Multiple controls in the selected tier
+  produce an option-naming clarification. An understood goal with no current-screen control becomes
+  an honest `Decision.Speak` limitation; it never fabricates a Click, presses Back/Home, or launches
+  an app.
+- Off-screen reachability remains deliberately open pending mentor input: accessibility HOME plus
+  launcher navigation versus a narrowly and explicitly labelled Intent fallback. `NotOnThisScreen`
+  preserves the goal for that future policy but Phase 5 performs no speculative navigation.
+- Every Click/SetText is revalidated against the exact planning snapshot: the identifier must be in
+  range, identify exactly one current element, and carry clickable/editable capability. Invalid or
+  mismatched candidates become NoMatch before any bridge call.
+- The configured regional URL is
+  `https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent`.
+  The interpreter's strict null unions are converted to Vertex's OpenAPI-compatible `nullable`
+  representation while retaining fixed intent/direction enums and all required fields. A 15-second
+  end-to-end call timeout bounds live requests and coroutine cancellation invokes OkHttp cancel.
+- Real Vertex acceptance was not attempted in-repo. This machine has no `GCP_LM_PROJECT_ID`,
+  `GCP_LM_LOCATION`, or `GCP_LM_MODEL` in local.properties, so project/region/model availability,
+  Vertex API enablement, IAM inference permission, quota/capacity, and live token validity remain to
+  be verified with company-approved configuration. All provider behavior was verified against the
+  deterministic loopback server; no credential value was printed or logged.
+- Left `bridge/UiBridge.kt`, `bridge/model/ScreenSnapshot.kt`, accessibility/manifest code,
+  `TextMatcher` behavior, verification behavior, and all `speech/` code unchanged. Added no ADC or
+  service-account library, JSON-key reader, real credential, accessibility API, event wait, timer,
+  sleep, coordinate action, app launch, or multi-step runner. The single shared normalizer remains
+  `normalization/TextNormalizer.kt`.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 156 JVM unit
+  tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
+  release APK variants assembled successfully.
+
 ## [2026-07-21] — M2 Accessibility Bridge Phase 1: deterministic text decisions
 
 ### Added
@@ -49,6 +200,162 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   normalization policy. No partial Traditional/Simplified conversion was introduced because the
   project has no existing conversion table/library and semantic aliases belong to Phase 2.
 - Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 101 JVM unit
+  tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
+  release APK variants assembled successfully.
+
+## [2026-07-21] — M2 Accessibility Bridge Phase 2: ranked matching inspector
+
+### Added
+
+- Added `decision/TextAliases.kt` with centralized normalized groups for
+  設定 / 設置 / Settings, 音樂 / 播放器 / Music, and 導航 / 地圖 / Navigation.
+- Added `decision/TextMatchResult.kt` with observable exact, substring, alias, and fuzzy tiers;
+  confidence score; winning candidate indices; and an explicit requested click/set-text action so
+  capability filtering does not require a Week 3 intent parser.
+- Added `ui/MatchingInspectorUiState.kt`, `ui/MatchingInspectorViewModel.kt`, and
+  `ui/MatchingInspectorSection.kt`. The appended DEBUG section displays the injected snapshot's
+  indices, text, click/edit capabilities, accepts a typed command, and renders the decision, tier,
+  and score without performing the action.
+- Added variant composition roots in `src/debug/.../DebugUiBridgeFactory.kt` and
+  `src/release/.../DebugUiBridgeFactory.kt`. DEBUG injects the scripted fake; the release guard is
+  never accessed because release does not initialize or render the inspector.
+- Added `ui/MatchingInspectorViewModelTest.kt` plus expanded `decision/TextMatcherTest.kt` coverage
+  for strict tier precedence, Chinese/English aliases, accepted/rejected fuzzy input, long-text
+  exclusion, equally ranked ambiguity, click/edit capability gates, and fake-backed inspector reads.
+
+### Changed
+
+- Changed `decision/TextMatcher.kt` to stop at the first populated tier, expose ranking diagnostics,
+  and ask a question naming all winning options whenever more than one eligible candidate remains.
+  The Phase 1 `match(command, snapshot): Decision` API remains as the click convenience wrapper.
+- Moved `bridge/FakeUiBridge.kt` from test-only to DEBUG sources so both JVM tests and the installed
+  DEBUG inspector use the same pure scripted 設定 / 音樂 / 導航 fixture; it remains absent from
+  release output.
+- Appended the inspector hook to `ui/SttDebugScreen.kt`, injected its lazy ViewModel from
+  `ui/MainActivity.kt`, and added inspector-only strings without reordering or changing any Week 1
+  STT, transcript, typed-input, cloud, selector, metrics, loopback, or TTS section.
+
+### Notes
+
+- Kept tier precedence absolute: a lower-tier numeric score cannot outrank any higher-tier match.
+  Exact scores 1.0, substring scores 0.90–0.95 by coverage, reviewed aliases score 0.88, and fuzzy
+  uses its calculated normalized similarity; scores are diagnostics inside a tier, not permission
+  to skip the tier order or guess among multiple candidates.
+- Chose fuzzy similarity ≥0.80, edit distance ≤2, and normalized lengths 3–12. These bounds tolerate
+  a small STT omission such as `Naviation` while rejecting tiny labels, unrelated words,
+  below-threshold candidates, and long descriptive strings that should never trigger a fuzzy click.
+- Click evaluation includes only `clickable` elements; explicit set-text evaluation includes only
+  `editable` elements and preserves replacement text intact. The matching inspector previews only
+  the default click decision and calls no `UiBridge` action primitive.
+- Left the frozen `bridge/UiBridge.kt` and `bridge/model/ScreenSnapshot.kt` unchanged. Added no
+  accessibility service, node-tree walker, bridge action implementation, manifest entry, event
+  wait, Android accessibility import, fixed sleep, coordinate, or external resource ID.
+- Retained `normalization/TextNormalizer.kt` as the only normalization implementation; all exact,
+  substring, alias, fuzzy, and duplicate-label comparisons consume its normalized keys.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 110 JVM unit
+  tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
+  release APK variants assembled successfully.
+
+## [2026-07-22] — M2 Accessibility Bridge Phase 3: post-action comparison
+
+### Added
+
+- Added `decision/ActionVerification.kt` with pure `ActionExpectation` and `VerificationResult`
+  models, `Decision`-to-expectation derivation, and deterministic before/after verification for
+  Click, SetText, and Back. Speak/NoMatch and invalid click indices produce no action expectation.
+- Added `decision/ActionVerificationTest.kt` coverage for changed/unchanged clicks, clicked-element
+  disappearance, material element-set changes, normalized text entry, wrong/unchanged edits,
+  changed/unchanged Back, unusable after-snapshots, and normalization/order/index/bounds stability.
+- Added a DEBUG verification-comparison subsection to the existing matching inspector. Testers can
+  capture the currently scripted fake snapshot as before or after, advance the fake, choose Click,
+  SetText, or Back, and inspect the typed result and fixed reason without performing an action.
+
+### Changed
+
+- Extended DEBUG `bridge/FakeUiBridge.kt` with a default four-snapshot demonstration sequence:
+  home, settings before edit, settings after `Roxanne` entry, then home. The existing fake still
+  records every bridge call so JVM tests prove the inspector reads only and invokes no action.
+- Extended `ui/MatchingInspectorUiState.kt`, `ui/MatchingInspectorViewModel.kt`, and
+  `ui/MatchingInspectorSection.kt` with immutable before/after selections and inspection-only
+  verification output; wired callbacks through `ui/SttDebugScreen.kt` and `ui/MainActivity.kt` and
+  added DEBUG labels in `strings.xml` after all existing Week 1 sections.
+- Extended `ui/MatchingInspectorViewModelTest.kt` to demonstrate Verified Click, SetText, and Back
+  results across the default fake sequence while asserting the call log contains only screen reads.
+
+### Notes
+
+- Snapshot element equality is a sorted, duplicate-preserving normalized multiset of `(text,
+  clickable, editable)`. It excludes snapshot time, bounds, traversal order, and element indices
+  because those can change without a semantic UI change; normalized screen identity is compared
+  separately. Structural values are compared directly rather than through a lossy hash.
+- Click is Verified when normalized screen identity changes, the normalized clicked label
+  disappears, or the material element multiset changes. Back accepts identity or material-set
+  change. Effectively identical usable snapshots return NotVerified even if action dispatch itself
+  returned true.
+- SetText requires both normalized expected-text containment (at the original index or another
+  element) and an effective element-set change. This prevents a pre-existing unchanged value from
+  being mistaken for action success; punctuation, whitespace, case, and full-width noise still use
+  the single shared `TextNormalizer` boundary.
+- An after-snapshot with no elements returns Inconclusive because a failed/unusable read cannot
+  prove the action failed. Noise-only expected text and unusable before-snapshots are also
+  Inconclusive; usable snapshots lacking expected evidence return fixed non-secret NotVerified
+  reasons.
+- Left frozen `bridge/UiBridge.kt` and `bridge/model/ScreenSnapshot.kt`, `TextMatcher`, speech code,
+  and LM design unchanged. Added no accessibility API, event listener, debounce, wait, delay, timer,
+  action execution, manifest entry, fixed sleep, or multi-step task behavior.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 121 JVM unit
+  tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
+  release APK variants assembled successfully.
+
+## [2026-07-22] — Decision layer Phase 4: strict LM intent interpreter seam
+
+### Added
+
+- Added `decision/UserGoal.kt` with index-free OpenTarget, text-size/volume/brightness adjustment,
+  GoBack, Stop, and Unknown goals plus explicit Increase/Decrease direction.
+- Added `decision/IntentInterpreter.kt` with provider-neutral Resolved, Clarify, and NoMatch results,
+  and `decision/LmClient.kt` with a minimal request/structured-response text seam containing no
+  provider SDK or credential type.
+- Added `decision/LmIntentInterpreter.kt`, which sends the revised six-field response schema,
+  validates exact keys/types/enums/ranges and goal-specific fields, rejects prohibited executable
+  output, retries rejected output/provider failure once, and propagates cancellation unchanged.
+- Added test-only `decision/FakeLmClient.kt` with scripted responses, failures, and ordered request
+  recording, plus 14 `decision/LmIntentInterpreterTest.kt` cases covering every goal/Direction,
+  bounded retry, malformed/missing/extra fields, unknown enums, confidence range, index/UI-call/
+  coordinate rejection, clarification, feature gating, provider failure, and cancellation.
+
+### Changed
+
+- Added release-safe `LM_ENABLED` BuildConfig/`config.FeatureFlags` support. It defaults to false in
+  `defaultConfig`, can be overridden only for DEBUG through gitignored `local.properties`, and is
+  documented as non-secret in `local.properties.example`.
+- Added the provider-neutral `kotlinx-serialization-json` parser dependency to `app/build.gradle.kts`
+  for strict pure-Kotlin JSON tree validation; no serialization code generation or provider library
+  was added.
+
+### Notes
+
+- Chose an inclusive 0.70 confidence threshold: a schema-valid value below it returns Clarify rather
+  than trusting the model's self-reported certainty, while explicit `needs_clarification` always
+  clarifies immediately. The schema-provided non-blank question is preferred; otherwise a fixed
+  Taiwan-Mandarin question is used.
+- Safety validation scans the entire raw response before parsing with case-insensitive patterns for
+  element/index keys or phrases, `ui_click`, `setText`, `performAction`, and coordinate/bounds keys,
+  words, or numeric tuples. Exact required-key equality independently rejects all extra fields, so
+  executable/index output is rejected even when the six required fields are otherwise valid.
+- Known schema enums and confidence are validated before clarification. Confident adjustment goals
+  require direction and no target; OpenTarget requires a non-blank target and no direction; Back,
+  Stop, and Unknown require both nullable fields to be null. The contextual snapshot never becomes
+  output and every `IntentResult` remains free of element indices and actions.
+- `LmIntentInterpreter.createWhenEnabled(false)` does not invoke its client factory, and no real LM
+  provider/composition exists in Phase 4. Generated DEBUG and release BuildConfig both confirmed
+  false under default configuration; deterministic `TextMatcher` direct-command behavior remains
+  covered and unchanged.
+- Deliberately omitted the optional DEBUG LM panel to preserve ARCHITECTURE §12.4's confinement of
+  LM references to the interpreter/seam until the later escalation/composition phase. Added no real
+  network call, Gemini/provider SDK, credential handling, pipeline/planner wiring, accessibility,
+  frozen-contract, speech, TextMatcher, or verification behavior.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: all 135 JVM unit
   tests passed with zero failures/skips, lint completed without a blocking issue, and debug and
   release APK variants assembled successfully.
 

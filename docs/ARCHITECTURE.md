@@ -8,16 +8,16 @@
 
 ## 1. What we are building (one paragraph)
 
-A single native Android app for **Android Automotive OS (AAOS)** that lets a driver operate the IVI screen by voice. The app listens to the user's intent (cloud STT), **reads the current screen** through an Android **AccessibilityService** (the "eye"), decides which on-screen element satisfies the intent (text matching by default, LM optional), **performs the tap/typing itself** (the "hand"), re-reads the screen to confirm the state changed, and speaks the result back (cloud TTS). Multi-step tasks are the same loop run repeatedly — every step depends only on the screen _as it is right now_.
+A single native Android app for **Android Automotive OS (AAOS)** that lets a driver operate the IVI screen by voice. The app listens to the user's intent (cloud STT), **reads the current screen** through an Android **AccessibilityService** (the "eye"), interprets what the driver wants (a schema-constrained LM returning a high-level goal), grounds that goal to an on-screen element locally, **performs the tap/typing itself** (the "hand"), re-reads the screen to confirm the state changed, and speaks the result back (cloud TTS). Multi-step tasks are the same loop run repeatedly — every step depends only on the screen _as it is right now_.
 
 ## 2. Non-negotiable constraints (from the project kickoff)
 
-1. **Decision logic lives in the app, not the cloud.** STT / LM / TTS are three _independent_ cloud services chained by the app.
-2. **LM is optional.** Simple commands must resolve by plain text matching. The LM sits behind a feature flag and must be removable with one config change.
+1. **Execution and authorization live in the app, not the cloud.** STT / LM / TTS are three _independent_ cloud services chained by the app. The LM may interpret meaning; only the app chooses an element, acts, and verifies.
+2. **The LM is the primary intent interpreter** (revised — see [`decision-layer.md`](decision-layer.md)). Every utterance is interpreted by a schema-constrained model returning a high-level **goal**; there is no hand-written intent table. The LM never returns an element index, UI call, or coordinate. Deterministic matching is retained for **grounding** goals to on-screen elements, and as a **fallback** when the LM is disabled, unreachable, or fails.
 3. **The Accessibility Service is the only operation mechanism.** No per-app HTTP APIs, no intents-to-specific-apps shortcuts for the core loop (deep-links may exist only as explicitly-labeled fallbacks).
 4. **Every action is followed by a read-back verification.** No fire-and-forget clicks.
 5. **Week 1 code must not touch Accessibility. Week 2 code must not touch voice.** Integration happens only in Week 3.
-6. **Cut order when behind schedule:** FoxMap/Target B first, then LM, then UI polish. The mainline **M1.3 → M2.3 → M3.2** is never cut.
+6. **Cut order when behind schedule:** FoxMap/Target B first, then UI polish. The mainline **M1.3 → M2.3 → M3.2** is never cut. Note: since the LM is now the primary interpreter it is no longer a cut candidate; the deterministic fallback is what keeps the app usable if the LM is unavailable.
 
 ## 3. High-level component map
 
@@ -44,10 +44,14 @@ app/
     │   ├── SeeAndSayService.kt     # AccessibilityService subclass
     │   ├── SnapshotBuilder.kt      # UI tree → ScreenSnapshot
     │   └── model/ScreenSnapshot.kt # data classes + kotlinx.serialization
-    ├── decision/          # Week 3 — intent → action
+    ├── normalization/     # shared, used by decision/ and pipeline/
+    │   └── TextNormalizer.kt       # ✓ the ONE normalize(); never compare raw strings
+    ├── decision/          # command → on-screen element
     │   ├── DecisionEngine.kt       # interface
-    │   ├── TextMatcher.kt          # tier 1, always on
-    │   └── LmPlanner.kt            # tier 2, behind FeatureFlags.LM_ENABLED
+    │   ├── Decision.kt             # ✓ Click / SetText / Back / Speak / NoMatch
+    │   ├── TextMatcher.kt          # ✓ always on: exact → substring → alias → fuzzy
+    │   └── LmIntentInterpreter.kt  # Week 3, behind FeatureFlags.LM_ENABLED
+    │                               #   transcript → UserGoal (never an action/index) — see §5.2
     ├── config/
     │   ├── FeatureFlags.kt         # LM_ENABLED, CLOUD_TTS_ENABLED, TARGET_B_ENABLED
     │   └── Secrets.kt              # reads from BuildConfig, never hardcode keys
@@ -131,9 +135,38 @@ Rules for `SnapshotBuilder`:
 
 ### 5.2 LM contract (only when `LM_ENABLED`)
 
-Request: `{ "transcript": "...", "screen": <ScreenSnapshot> }`
-Response (strict JSON, reject anything else): `{ "action": "click|set_text|back|speak|no_match", "index": 0, "text": "..." }`
-On malformed output: retry once, then fall back to `TextMatcher`.
+> **Revised.** The LM returns a high-level **goal**, never an action or an element index. Full design
+> and rationale: [`decision-layer.md`](decision-layer.md). There is **no hand-written intent table** —
+> semantic interpretation is done by a schema-constrained model.
+
+**When the LM is called:** for **every** non-empty utterance — it is the primary interpreter, not a
+fallback. Deterministic matching runs only (a) *after* the LM, to ground the returned goal/target to a
+real element, and (b) *instead of* the LM when it is disabled, unreachable, or fails — so direct
+commands still work offline.
+
+Request: `{ "transcript": "...", "screen": <ScreenSnapshot> }` — the snapshot is **context only**.
+
+Response — strict schema, fixed enums, reject anything else:
+
+```json
+{
+  "intent": "adjust_text_size | adjust_volume | adjust_brightness | open_target | go_back | stop | unknown",
+  "direction": "increase | decrease | null",
+  "target": "string | null",
+  "control_query": "string | null",
+  "confidence": 0.0,
+  "needs_clarification": false,
+  "clarification_question": "string | null"
+}
+```
+
+The app converts this to a `UserGoal`; a **local** planner then chooses which on-screen element serves
+that goal, acts through `UiBridge`, and verifies. Mapping goal → element is always local.
+
+Reject: unknown intent names, unknown enum values, missing fields, confidence outside `0.0..1.0`, and
+**any response containing an element index, UI function call, or coordinate**. Low confidence or
+`needs_clarification` → ask the user; never guess. On malformed output: retry once, then fall back to
+`TextMatcher` and return clarify / no-match.
 
 ## 6. The state machine (single utterance)
 
@@ -177,7 +210,7 @@ Rules:
 
 - Cloud credentials via `local.properties` → `BuildConfig`. **Never commit keys.** `.gitignore` covers `local.properties` and `*.json` service-account files.
 - Credential precedence follows provider authorization: STT V2 Chirp and Gemini-TTS prefer the short-lived OAuth bearer token because they are IAM-gated, while STT V1 and classic WaveNet TTS prefer the restricted API key. Fallback may retain the other configured mode, but every RPC sends exactly one credential. A service-account JSON remains outside the repository/APK and is used only by approved external tooling to mint the token.
-- `FeatureFlags` is the only place behavior toggles live: `LM_ENABLED` (default **false**), `CLOUD_TTS_ENABLED` (default true, false = on-device TTS), `TARGET_B_ENABLED` (default false).
+- `FeatureFlags` is the only place behavior toggles live: `LM_ENABLED` (default **true** — the LM is the primary interpreter; false forces the deterministic fallback path), `CLOUD_TTS_ENABLED` (default true, false = on-device TTS), `TARGET_B_ENABLED` (default false).
 - Locale: primary zh-TW for STT/TTS and matching; keep locale a single constant.
 
 ## 10. Testing strategy
@@ -205,7 +238,7 @@ Rules:
 1. **Stay in your module.** A Week 1 task never adds code to `bridge/`; a Week 2 task never adds code to `speech/`. Cross-module wiring happens only in `pipeline/` and only for Week 3 tasks.
 2. **Never widen the Bridge silently.** New primitive ⇒ update Section 4 + Section 5 of this doc in the same PR.
 3. **Every action code path ends in a verification.** PRs adding an action without a read-back check get rejected.
-4. **LM code must compile out cleanly.** Nothing outside `decision/LmPlanner` may reference the LM.
+4. **LM code stays confined, and the fallback stays real.** No provider/HTTP/wire type may appear outside the LM implementation (`decision/LmIntentInterpreter` and the `LmClient` implementation). With `LM_ENABLED = false` — or when the LM is unreachable, rejected, or returns invalid output — the project must build, initialise no provider, and **direct commands must still resolve** through `TextMatcher`. The LM is the primary interpreter, but the app must never be left unusable when it is unavailable.
 5. **No hardcoded coordinates, resource IDs of other apps, or sleep-based waits** (event-driven waits per Section 8).
 6. **Small PRs mapped to a milestone ID** (e.g., `M2.1: snapshot builder`). If a change doesn't serve a milestone, it doesn't ship this month.
 7. **When blocked or when reality contradicts this doc, stop and report** — do not invent a workaround that violates Section 2.
