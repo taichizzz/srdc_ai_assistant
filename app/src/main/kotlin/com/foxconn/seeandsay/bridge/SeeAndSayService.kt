@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 /**
  * The `AccessibilityService` that gives the assistant its "eye & hand" on the device.
@@ -12,12 +14,21 @@ import android.view.accessibility.AccessibilityEvent
  * Settings → Accessibility. The instance is published to the rest of the `bridge` package through
  * [instance] so [AccessibilityBridge] can reach `getRootInActiveWindow()` without a Context handle.
  *
- * M2.1 scope: the service only needs to be connected so the current window tree can be read on
- * demand. It performs no event-driven logic yet; [onAccessibilityEvent] stays a no-op and reading is
- * pull-based. Clicking/typing (M2.2) and read-back verification (M2.3) build on this same
- * connection. This class stays inside the `bridge` package and never imports `speech`.
+ * Reading remains pull-based. For M2.3, relevant window content/state events are reduced to an
+ * in-process coroutine signal consumed by [awaitScreenSettled]; no Android callback or node escapes
+ * the `bridge` package. This class stays inside `bridge` and never imports speech or decision code.
  */
 class SeeAndSayService : AccessibilityService() {
+
+    /** Hot, non-blocking event signal; overflow keeps the newest activity in a burst. */
+    private val screenChangeEvents =
+        MutableSharedFlow<Unit>(
+            extraBufferCapacity = 1,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+
+    /** Debounces the service-owned signal without exposing Android callbacks outside bridge. */
+    private val screenSettler = EventDrivenScreenSettler(screenChangeEvents)
 
     /**
      * Records that the service is connected and publishes this instance for the Bridge.
@@ -31,14 +42,33 @@ class SeeAndSayService : AccessibilityService() {
     }
 
     /**
-     * Observes accessibility events. M2.1 keeps this a no-op; M2.3 will use window-content-changed
-     * events to wait for a screen to settle after an action.
+     * Signals content/state changes without blocking Android's accessibility callback thread.
      *
      * @param event the platform-reported accessibility event, possibly null.
+     *
+     * Only `TYPE_WINDOW_CONTENT_CHANGED` and `TYPE_WINDOW_STATE_CHANGED` are accepted. `tryEmit`
+     * performs no suspension or I/O; a burst is conflated by the bounded shared-flow buffer and
+     * later debounced by [awaitScreenSettled]. Null and unrelated events are ignored.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Intentionally minimal for M2.1. Reading is pull-based via AccessibilityBridge.readScreen().
+        when (event?.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            -> screenChangeEvents.tryEmit(Unit)
+        }
     }
+
+    /**
+     * Waits for a relevant event burst to become quiet.
+     *
+     * @param timeoutMillis positive complete wait bound supplied by pipeline composition.
+     * @return settled-change or timeout observation; timeout never throws.
+     *
+     * This is bridge-internal coroutine work. Cancellation propagates and removes the shared-flow
+     * collector; no listener, callback, node, or service reference escapes this package.
+     */
+    internal suspend fun awaitScreenSettled(timeoutMillis: Long): ScreenSettleResult =
+        screenSettler.awaitScreenSettled(timeoutMillis)
 
     /**
      * Required override; the assistant does not respond to interruption requests.

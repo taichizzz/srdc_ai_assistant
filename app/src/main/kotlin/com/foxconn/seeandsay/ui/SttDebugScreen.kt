@@ -56,6 +56,10 @@ import com.foxconn.seeandsay.R
  * @param onVerificationBeforeSelected captures the shown scripted snapshot as before-state.
  * @param onVerificationAfterSelected captures the shown scripted snapshot as after-state.
  * @param onVerificationRequested previews comparison for an explicitly selected decision.
+ * @param integratedCommandState DEBUG-only live command/action/verification state, null in release.
+ * @param onIntegratedCommandRun runs typed text against the screen beneath this activity.
+ * @param onIntegratedLmInspect runs a no-action live LM diagnostic against that screen.
+ * @param onOpenAccessibilitySettings opens Android's accessibility service settings.
  * @return This composable emits UI and has no return value.
  *
  * Composition and callbacks run on Android's main thread. The composable launches no coroutine,
@@ -88,6 +92,10 @@ fun SttDebugScreen(
     onVerificationBeforeSelected: () -> Unit,
     onVerificationAfterSelected: () -> Unit,
     onVerificationRequested: (VerificationDecisionKind, String) -> Unit,
+    integratedCommandState: IntegratedCommandUiState?,
+    onIntegratedCommandRun: (String) -> Unit,
+    onIntegratedLmInspect: (String) -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
 ) {
     var typedTranscript by rememberSaveable { mutableStateOf("") }
     var ttsText by rememberSaveable { mutableStateOf("") }
@@ -661,6 +669,15 @@ fun SttDebugScreen(
                 onVerificationBeforeSelected = onVerificationBeforeSelected,
                 onVerificationAfterSelected = onVerificationAfterSelected,
                 onVerificationRequested = onVerificationRequested,
+            )
+        }
+
+        if (BuildConfig.DEBUG && integratedCommandState != null) {
+            IntegratedCommandSection(
+                state = integratedCommandState,
+                onRun = onIntegratedCommandRun,
+                onInspectLm = onIntegratedLmInspect,
+                onOpenAccessibilitySettings = onOpenAccessibilitySettings,
             )
         }
     }

@@ -26,7 +26,7 @@ class DefaultDecisionEngine(
     private val intentInterpreterFactory: (() -> IntentInterpreter)? = null,
     private val textMatcher: TextMatcher = TextMatcher(),
     private val goalPlanner: GoalPlanner = KeywordGoalPlanner(textMatcher),
-) : DecisionEngine {
+) : TraceableDecisionEngine {
 
     /** Lazily constructed only for the first enabled, normalized non-empty utterance. */
     private val intentInterpreter: IntentInterpreter? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
@@ -44,33 +44,104 @@ class DefaultDecisionEngine(
      * enter deterministic fallback; cancellation is rethrown without a user-visible conversion.
      * Blank-after-normalization input returns NoMatch without provider construction or matching.
      */
-    override suspend fun decide(transcript: String, screen: ScreenSnapshot): Decision {
+    override suspend fun decide(transcript: String, screen: ScreenSnapshot): Decision =
+        decideWithResolution(transcript, screen).decision
+
+    /**
+     * Produces one validated decision plus a non-secret LM/fallback diagnostic.
+     *
+     * @param transcript raw utterance normalized before interpretation or fallback matching.
+     * @param screen exact immutable snapshot used through matching, planning, and validation.
+     * @return validated decision paired with the route that actually produced it.
+     *
+     * The enabled primary interpreter may suspend. NoMatch and normal factory/provider failures
+     * enter deterministic fallback; cancellation is rethrown without a user-visible conversion.
+     * No prompt, model response, provider failure body, or credential is returned or logged.
+     */
+    override suspend fun decideWithResolution(
+        transcript: String,
+        screen: ScreenSnapshot,
+    ): DecisionResolution {
         val normalizedTranscript = TextNormalizer.normalize(transcript)
-        if (normalizedTranscript.isEmpty()) return Decision.NoMatch
-        if (!lmEnabled) return deterministicFallback(normalizedTranscript, screen)
+        if (normalizedTranscript.isEmpty()) return fallbackResolution(Decision.NoMatch)
+        if (!lmEnabled) return deterministicResolution(normalizedTranscript, screen)
         val interpreter =
             try {
                 intentInterpreter
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Throwable) {
-                return deterministicFallback(normalizedTranscript, screen)
-            } ?: return deterministicFallback(normalizedTranscript, screen)
+                return deterministicResolution(
+                    normalizedTranscript,
+                    screen,
+                    failureDiagnostic(LmClientFailureReason.Unknown, attempts = 0),
+                )
+            } ?: return deterministicResolution(
+                normalizedTranscript,
+                screen,
+                failureDiagnostic(LmClientFailureReason.NotConfigured, attempts = 0),
+            )
 
-        val interpreted =
+        val diagnostic =
             try {
-                interpreter.interpret(normalizedTranscript, screen)
+                if (interpreter is DiagnosticIntentInterpreter) {
+                    interpreter.interpretWithDiagnostics(normalizedTranscript, screen)
+                } else {
+                    LmInterpretationDiagnostic(
+                        result = interpreter.interpret(normalizedTranscript, screen),
+                        attempts = 1,
+                    )
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Throwable) {
-                return deterministicFallback(normalizedTranscript, screen)
+                return deterministicResolution(
+                    normalizedTranscript,
+                    screen,
+                    failureDiagnostic(LmClientFailureReason.Unknown, attempts = 1),
+                )
             }
-        return when (interpreted) {
-            is IntentResult.Resolved -> plan(interpreted.goal, screen)
-            is IntentResult.Clarify -> Decision.Speak(interpreted.question)
-            IntentResult.NoMatch -> deterministicFallback(normalizedTranscript, screen)
+        return when (val interpreted = diagnostic.result) {
+            is IntentResult.Resolved -> lmResolution(plan(interpreted.goal, screen), diagnostic)
+            is IntentResult.Clarify ->
+                lmResolution(Decision.Speak(interpreted.question), diagnostic)
+            IntentResult.NoMatch ->
+                deterministicResolution(normalizedTranscript, screen, diagnostic)
         }
     }
+
+    /** Wraps deterministic matching with its observable resolution route. */
+    private fun deterministicResolution(
+        normalizedTranscript: String,
+        screen: ScreenSnapshot,
+        lmDiagnostic: LmInterpretationDiagnostic? = null,
+    ): DecisionResolution =
+        fallbackResolution(deterministicFallback(normalizedTranscript, screen), lmDiagnostic)
+
+    /** Wraps a provider-neutral LM-derived decision without exposing model data. */
+    private fun lmResolution(
+        decision: Decision,
+        diagnostic: LmInterpretationDiagnostic,
+    ): DecisionResolution =
+        DecisionResolution(decision, DecisionResolutionPath.LanguageModel, diagnostic)
+
+    /** Wraps a deterministic decision without exposing an internal failure cause. */
+    private fun fallbackResolution(
+        decision: Decision,
+        lmDiagnostic: LmInterpretationDiagnostic? = null,
+    ): DecisionResolution =
+        DecisionResolution(decision, DecisionResolutionPath.DeterministicFallback, lmDiagnostic)
+
+    /** Creates a fixed safe diagnostic for pre-call/interpreter failures. */
+    private fun failureDiagnostic(
+        reason: LmClientFailureReason,
+        attempts: Int,
+    ): LmInterpretationDiagnostic =
+        LmInterpretationDiagnostic(
+            result = IntentResult.NoMatch,
+            attempts = attempts,
+            lastRejectedIssue = LmDiagnosticIssue.ClientFailure(reason),
+        )
 
     /**
      * Applies raw-command matching only when the primary LM path is disabled or unavailable.

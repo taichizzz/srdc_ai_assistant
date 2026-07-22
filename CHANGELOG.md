@@ -15,6 +15,69 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/PROJECT.md`.
 - Updated `README.md` Build & Run to real Gradle steps now that `app/` is scaffolded.
 
+## [2026-07-22] — M2.3 integration: event-driven action verification
+
+### Added
+
+- Added `bridge/ScreenSettler.kt` with a provider-neutral settle result/seam and an event-driven
+  Flow implementation. It requires at least one accessibility signal, debounces a 300 ms quiet
+  window, returns a typed timeout, and removes its collector on cancellation.
+- Added `pipeline/IntegratedCommandCoordinator.kt`, the sole bridge+decision composition for the
+  typed DEBUG path. It reads, resolves through the LM-first engine/fallback, revalidates, dispatches,
+  waits, re-reads, and calls `ActionVerification.verify`; action acceptance alone is never success.
+- Added provider-neutral decision-route diagnostics (`LanguageModel` or
+  `DeterministicFallback`) through `decision/DecisionEngine.kt` and
+  `decision/DefaultDecisionEngine.kt` without exposing prompts, model output, provider types, or
+  credentials.
+- Added `ui/IntegratedCommand{UiState,ViewModel,Section}.kt` and debug/release pipeline composition
+  roots. The section is appended below all existing Week 1 and matching/verification controls and
+  displays decision route, action dispatch, event-wait outcome, and typed verification reason.
+- Added a no-action live LM debugger to the integrated section. It reports snapshot provenance,
+  schema-validated goal/confidence or clarification/no-match, bounded attempt count, and fixed safe
+  provider/schema issue category while excluding raw model output, prompts, tokens, and headers.
+- Added `bridge/EventDrivenScreenSettlerTest.kt` with coroutine virtual-time debounce, timeout, and
+  cancellation coverage, plus `pipeline/IntegratedCommandCoordinatorTest.kt` for LM/fallback
+  resolution, ordered bridge calls, no-action decisions, and all verification categories.
+- Added `docs/demos/M2.3.md` with deterministic and real-device acceptance instructions.
+
+### Changed
+
+- Changed `bridge/SeeAndSayService.kt` minimally so its existing accessibility callback signals
+  only `TYPE_WINDOW_CONTENT_CHANGED` and `TYPE_WINDOW_STATE_CHANGED` into a bounded hot coroutine
+  stream. `AccessibilityBridge.kt` now implements `ScreenSettler` by delegating to that service;
+  existing read/click/set-text/back and `SnapshotBuilder` behavior remains intact.
+- Updated the existing Bridge debug activity to use the integrated coordinator for typed commands
+  and Back. Its former one-second blind delay and fire-and-forget action reporting were removed;
+  it now reports read-back verification instead of dispatch acceptance as success.
+- Relabelled the retained Phase-2 matching and Phase-3 comparison inspectors as `SCRIPTED FAKE` so
+  they cannot be confused with the live `AccessibilityBridge` flow.
+- Updated `docs/ARCHITECTURE.md` to identify the DEBUG typed M2.3 coordinator/event waiter while
+  leaving M3.1 production voice integration separate and the LM-first contract unchanged.
+
+### Notes
+
+- The original two-person ownership split is explicitly lifted for this task. The M2.3 event waiter
+  was implemented outside its original Person 1/Mark ownership lane under direct authorization;
+  Mark should review the small `SeeAndSayService` and `AccessibilityBridge` additions.
+- The XML service configuration already subscribed to both required event types, so no XML change
+  was necessary. A hot SharedFlow is used instead of leaking callbacks; the coordinator starts
+  collection undispatched before target reveal/action to avoid missing the first event.
+- A bounded 2.5-second wait includes the 300 ms debounce window. Timeout is evidence, not an
+  exception: the coordinator still reads and compares the after-snapshot. The only remaining
+  150 ms delay in accessibility code is Mark's architecture-documented transient-null root retry,
+  not the post-action wait mechanism.
+- DEBUG live composition defaults to LM-first. Empty/invalid Vertex configuration and provider
+  failure recover through deterministic TextMatcher, so a visible 「設定」 control remains testable
+  without a live credential. Production voice remains on the unchanged M1.3 RuleBasedReplyEngine;
+  typed integration does not silently expand into M3.1.
+- Snapshot provenance is explicit. A direct read while an assistant activity is foreground captures
+  that activity, as Android accessibility semantics require. Integrated command/LM-debug runs start
+  event collection, background the assistant, await the underlying window settling, and only then
+  capture the target snapshot; their UI reports `UnderlyingTarget` rather than implying otherwise.
+- Verified `./gradlew testDebugUnitTest assembleDebug lintDebug assembleRelease`: 179 JVM tests
+  passed with zero failures/skips, lint completed without a blocking issue, and debug/release APKs
+  assembled. The pre-change baseline was 163 tests.
+
 ## [2026-07-22] — Decision layer Phase 6: LM-first interpretation and semantic grounding
 
 ### Added

@@ -35,7 +35,7 @@ class BridgeUnavailableException(
  */
 class AccessibilityBridge(
     private val serviceProvider: () -> SeeAndSayService? = { SeeAndSayService.instance },
-) : UiBridge {
+) : UiBridge, ScreenSettler {
 
     /** Live nodes aligned with the most recent snapshot's element indices; empty until first read. */
     @Volatile
@@ -110,6 +110,21 @@ class AccessibilityBridge(
         val service = serviceProvider() ?: return false
         return runCatching { service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK) }
             .getOrDefault(false)
+    }
+
+    /**
+     * Waits for the connected service's content/state event burst to settle.
+     *
+     * @param timeoutMillis positive complete wait bound, including the debounce quiet window.
+     * @return [ScreenSettleResult.TimedOut] when the service is disconnected or no debounced event
+     * arrives; otherwise [ScreenSettleResult.ChangeObserved].
+     *
+     * This delegates only to the service-owned coroutine signal. Cancellation propagates and
+     * releases its collector. It performs no action, snapshot read, fixed sleep, or verification.
+     */
+    override suspend fun awaitScreenSettled(timeoutMillis: Long): ScreenSettleResult {
+        val service = serviceProvider() ?: return ScreenSettleResult.TimedOut
+        return service.awaitScreenSettled(timeoutMillis)
     }
 
     /**

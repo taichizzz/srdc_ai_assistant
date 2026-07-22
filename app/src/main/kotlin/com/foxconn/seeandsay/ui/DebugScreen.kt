@@ -33,13 +33,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.foxconn.seeandsay.BuildConfig
 import com.foxconn.seeandsay.bridge.AccessibilityBridge
 import com.foxconn.seeandsay.bridge.SeeAndSayService
 import com.foxconn.seeandsay.bridge.UiBridge
 import com.foxconn.seeandsay.bridge.model.ScreenElement
 import com.foxconn.seeandsay.decision.Decision
-import com.foxconn.seeandsay.decision.TextMatcher
-import kotlinx.coroutines.delay
+import com.foxconn.seeandsay.decision.VerificationResult
+import com.foxconn.seeandsay.pipeline.CommandAction
+import com.foxconn.seeandsay.pipeline.IntegratedCommandCoordinator
+import com.foxconn.seeandsay.pipeline.IntegratedCommandOutcome
+import com.foxconn.seeandsay.pipeline.createIntegratedCommandCoordinator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
@@ -50,14 +55,22 @@ import kotlinx.coroutines.launch
 class BridgeDebugActivity : ComponentActivity() {
 
     private val bridge: UiBridge = AccessibilityBridge()
+    private val coordinator: IntegratedCommandCoordinator by lazy {
+        createIntegratedCommandCoordinator()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!BuildConfig.DEBUG) {
+            finish()
+            return
+        }
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     DebugScreen(
                         bridge = bridge,
+                        coordinator = coordinator,
                         moveAppToBack = { moveTaskToBack(true) },
                     )
                 }
@@ -66,41 +79,25 @@ class BridgeDebugActivity : ComponentActivity() {
     }
 }
 
-/** Delay after backgrounding so the underlying screen is frontmost and settled before reading. */
-private const val SETTLE_DELAY_MS = 1_000L
-
 /**
- * Executes one typed command against the screen underneath this app (the M2.2 loop without voice):
- * background the app → wait → read → match → click, reporting each outcome as user-visible text.
+ * Executes one typed command through the integrated read/decide/act/event-wait/verify coordinator.
  *
- * @param bridge the Bridge used to read and act.
+ * @param coordinator pipeline composition used to decide, act, and verify.
  * @param command raw typed command, e.g.「設定」.
  * @param moveAppToBack backgrounds the activity so the target screen becomes readable.
  * @param appContext application context for Toasts that must survive backgrounding.
  * @return a short zh-TW result line for on-screen state.
  */
 private suspend fun runCommand(
-    bridge: UiBridge,
+    coordinator: IntegratedCommandCoordinator,
     command: String,
     moveAppToBack: () -> Unit,
     appContext: Context,
 ): String {
-    moveAppToBack()
-    delay(SETTLE_DELAY_MS)
     val result = try {
-        val snapshot = bridge.readScreen()
-        when (val decision = TextMatcher().match(command, snapshot)) {
-            is Decision.Click -> {
-                val label = snapshot.elements.getOrNull(decision.index)?.text ?: command
-                val clicked = bridge.click(decision.index)
-                if (clicked) "已點擊『$label』" else "找到『$label』但點擊失敗"
-            }
-
-            is Decision.Speak -> decision.text
-            is Decision.SetText -> "此指令需要輸入欄位（M2.2 不由比對器產生）"
-            Decision.Back -> "此指令對應返回（請用返回鍵測試）"
-            Decision.NoMatch -> "畫面上找不到可點的『$command』"
-        }
+        formatOutcome(coordinator.run(command, moveAppToBack))
+    } catch (error: CancellationException) {
+        throw error
     } catch (error: Exception) {
         error.message ?: "執行失敗"
     }
@@ -108,16 +105,44 @@ private suspend fun runCommand(
     return result
 }
 
+/** Formats integrated diagnostics without treating dispatch acceptance as success. */
+private fun formatOutcome(outcome: IntegratedCommandOutcome): String =
+    when (outcome) {
+        is IntegratedCommandOutcome.Failed -> outcome.reason
+        is IntegratedCommandOutcome.Completed -> {
+            val result = outcome.result
+            when (val decision = result.resolution.decision) {
+                is Decision.Speak -> decision.text
+                Decision.NoMatch -> "目前畫面找不到可執行的項目"
+                else -> {
+                    val accepted = (result.action as? CommandAction.Attempted)?.accepted == true
+                    val verification =
+                        when (val verified = result.verification) {
+                            VerificationResult.Verified -> "Verified"
+                            is VerificationResult.NotVerified ->
+                                "NotVerified: ${verified.reason}"
+                            is VerificationResult.Inconclusive ->
+                                "Inconclusive: ${verified.reason}"
+                            null -> "Not verified"
+                        }
+                    "${result.resolution.path.name} · accepted=$accepted · $verification"
+                }
+            }
+        }
+    }
+
 /**
  * Week 2 bridge debug UI: service status, live element list (M2.1), and typed-command execution
  * against the underlying screen (M2.2).
  *
  * @param bridge the Bridge used to read the screen and perform actions.
+ * @param coordinator integrated pipeline used by every action control.
  * @param moveAppToBack backgrounds the hosting activity before command execution.
  */
 @Composable
 private fun DebugScreen(
     bridge: UiBridge,
+    coordinator: IntegratedCommandCoordinator,
     moveAppToBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -177,7 +202,13 @@ private fun DebugScreen(
                 onClick = {
                     scope.launch {
                         serviceEnabled = SeeAndSayService.instance != null
-                        commandResult = runCommand(bridge, command.trim(), moveAppToBack, appContext)
+                        commandResult =
+                            runCommand(
+                                coordinator,
+                                command.trim(),
+                                moveAppToBack,
+                                appContext,
+                            )
                     }
                 },
             ) {
@@ -185,10 +216,13 @@ private fun DebugScreen(
             }
             OutlinedButton(onClick = {
                 scope.launch {
-                    moveAppToBack()
-                    delay(SETTLE_DELAY_MS)
-                    val ok = bridge.back()
-                    val text = if (ok) "已送出返回鍵" else "返回鍵失敗（服務未啟用？）"
+                    val text =
+                        formatOutcome(
+                            coordinator.runPreResolved(
+                                decision = Decision.Back,
+                                revealTargetScreen = moveAppToBack,
+                            ),
+                        )
                     commandResult = text
                     Toast.makeText(appContext, text, Toast.LENGTH_LONG).show()
                 }

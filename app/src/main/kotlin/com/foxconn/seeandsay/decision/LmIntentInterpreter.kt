@@ -32,7 +32,7 @@ import kotlinx.serialization.json.floatOrNull
 class LmIntentInterpreter(
     private val lmClient: LmClient,
     private val confidenceThreshold: Float = DEFAULT_CONFIDENCE_THRESHOLD,
-) : IntentInterpreter {
+) : DiagnosticIntentInterpreter {
 
     init {
         require(confidenceThreshold.isFinite() && confidenceThreshold in 0.0f..1.0f) {
@@ -55,33 +55,78 @@ class LmIntentInterpreter(
     override suspend fun interpret(
         transcript: String,
         screen: ScreenSnapshot,
-    ): IntentResult {
+    ): IntentResult = interpretWithDiagnostics(transcript, screen).result
+
+    /**
+     * Requests and validates responses while retaining only safe attempt/rejection diagnostics.
+     *
+     * @param transcript normalized non-empty utterance.
+     * @param screen immutable context projected to index-free values in [LmRequest].
+     * @return final intent result, attempt count, and optional fixed rejection category.
+     *
+     * Raw output is validated then discarded and never returned/logged. Provider exceptions are
+     * reduced to [LmClientFailureReason]; unknown ordinary failures use Unknown. Cancellation is
+     * rethrown immediately with no retry or visible error.
+     */
+    override suspend fun interpretWithDiagnostics(
+        transcript: String,
+        screen: ScreenSnapshot,
+    ): LmInterpretationDiagnostic {
         val request = LmRequest(transcript, screen.toLmScreenContext(), RESPONSE_SCHEMA)
+        var attempts = 0
+        var lastRejectedIssue: LmDiagnosticIssue? = null
         repeat(MAX_ATTEMPTS) {
+            attempts += 1
             val response =
                 try {
                     lmClient.complete(request)
                 } catch (error: CancellationException) {
                     throw error
+                } catch (error: LmClientException) {
+                    lastRejectedIssue = LmDiagnosticIssue.ClientFailure(error.reason)
+                    return@repeat
                 } catch (_: Throwable) {
+                    lastRejectedIssue =
+                        LmDiagnosticIssue.ClientFailure(LmClientFailureReason.Unknown)
                     return@repeat
                 }
-            val validated = validate(response) ?: return@repeat
+            val validated =
+                validate(response) ?: run {
+                    lastRejectedIssue = LmDiagnosticIssue.InvalidOrUnsafeResponse
+                    return@repeat
+                }
             if (
                 validated.needsClarification ||
                 validated.confidence < confidenceThreshold
             ) {
-                return IntentResult.Clarify(
-                    validated.clarificationQuestion
-                        ?.trim()
-                        ?.takeIf(String::isNotEmpty)
-                        ?: DEFAULT_CLARIFICATION_QUESTION,
+                return LmInterpretationDiagnostic(
+                    result =
+                        IntentResult.Clarify(
+                            validated.clarificationQuestion
+                                ?.trim()
+                                ?.takeIf(String::isNotEmpty)
+                                ?: DEFAULT_CLARIFICATION_QUESTION,
+                        ),
+                    attempts = attempts,
+                    lastRejectedIssue = lastRejectedIssue,
                 )
             }
-            val goal = validated.toGoal() ?: return@repeat
-            return IntentResult.Resolved(goal, validated.confidence)
+            val goal =
+                validated.toGoal() ?: run {
+                    lastRejectedIssue = LmDiagnosticIssue.InvalidOrUnsafeResponse
+                    return@repeat
+                }
+            return LmInterpretationDiagnostic(
+                result = IntentResult.Resolved(goal, validated.confidence),
+                attempts = attempts,
+                lastRejectedIssue = lastRejectedIssue,
+            )
         }
-        return IntentResult.NoMatch
+        return LmInterpretationDiagnostic(
+            result = IntentResult.NoMatch,
+            attempts = attempts,
+            lastRejectedIssue = lastRejectedIssue,
+        )
     }
 
     /**

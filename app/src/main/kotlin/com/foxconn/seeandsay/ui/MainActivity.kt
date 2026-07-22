@@ -25,6 +25,7 @@ import com.foxconn.seeandsay.config.GcpSttV2Config
 import com.foxconn.seeandsay.config.GcpTtsConfig
 import com.foxconn.seeandsay.pipeline.RuleBasedReplyEngine
 import com.foxconn.seeandsay.pipeline.VoicePipeline
+import com.foxconn.seeandsay.pipeline.createIntegratedCommandCoordinator
 import com.foxconn.seeandsay.speech.CloudSttClient
 import com.foxconn.seeandsay.speech.CloudSttV2Client
 import com.foxconn.seeandsay.speech.CloudTtsClient
@@ -43,9 +44,9 @@ import com.foxconn.seeandsay.speech.SwitchableTtsClient
  * components, the local-only credential-presence check, selectable V1/Chirp 3 DEBUG production
  * recognition, and the M1.3 ReplyEngine/TTS tail through VoicePipeline. A separate TtsViewModel
  * owns an independent cloud-first Taiwan-Mandarin client for standalone DEBUG M1.2 controls,
- * avoiding cross-ViewModel client ownership. A DEBUG-only matching inspector lazily receives a
- * provider-neutral scripted UiBridge; release never creates it. Permission requests can be denied
- * or suppressed by Android; both outcomes become recoverable UI state rather than escaping.
+ * avoiding cross-ViewModel client ownership. DEBUG-only inspectors lazily receive the scripted
+ * matching bridge and the live integrated command coordinator; release creates neither. Permission
+ * requests can be denied or suppressed by Android; both outcomes become recoverable UI state.
  */
 class MainActivity : ComponentActivity() {
 
@@ -206,6 +207,16 @@ class MainActivity : ComponentActivity() {
         MatchingInspectorViewModel.Factory(createDebugUiBridge())
     }
 
+    /**
+     * Owns the DEBUG-only typed live bridge → decision → action → verification flow.
+     *
+     * The variant factory is accessed only from DEBUG composition. Its LM client stays lazy until a
+     * command runs; release neither accesses this delegate nor constructs a provider/bridge.
+     */
+    private val integratedCommandViewModel: IntegratedCommandViewModel by viewModels {
+        IntegratedCommandViewModel.Factory(createIntegratedCommandCoordinator())
+    }
+
     private val microphonePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             // A false rationale result after a completed request means Android will not present the
@@ -249,6 +260,12 @@ class MainActivity : ComponentActivity() {
             val matchingInspectorState =
                 if (BuildConfig.DEBUG) {
                     matchingInspectorViewModel.uiState.collectAsStateWithLifecycle().value
+                } else {
+                    null
+                }
+            val integratedCommandState =
+                if (BuildConfig.DEBUG) {
+                    integratedCommandViewModel.uiState.collectAsStateWithLifecycle().value
                 } else {
                     null
                 }
@@ -313,6 +330,24 @@ class MainActivity : ComponentActivity() {
                                     expectedText,
                                 )
                             }
+                        },
+                        integratedCommandState = integratedCommandState,
+                        onIntegratedCommandRun = { command ->
+                            if (BuildConfig.DEBUG) {
+                                integratedCommandViewModel.onRunRequested(command) {
+                                    moveTaskToBack(true)
+                                }
+                            }
+                        },
+                        onIntegratedLmInspect = { command ->
+                            if (BuildConfig.DEBUG) {
+                                integratedCommandViewModel.onLmInspectRequested(command) {
+                                    moveTaskToBack(true)
+                                }
+                            }
+                        },
+                        onOpenAccessibilitySettings = {
+                            if (BuildConfig.DEBUG) openAccessibilitySettings()
                         },
                     )
                 }
@@ -420,6 +455,29 @@ class MainActivity : ComponentActivity() {
         } catch (error: SecurityException) {
             sttViewModel.onExternalActionFailed(
                 "Android blocked access to the application Settings screen.",
+            )
+        }
+    }
+
+    /**
+     * Opens Android's accessibility settings for enabling the live bridge service.
+     *
+     * @return no value.
+     *
+     * This main-thread DEBUG helper starts only the system Settings activity. Resolution/security
+     * failures become existing fixed UI error state; it performs no command, provider call, action,
+     * event wait, credential access, or logging.
+     */
+    private fun openAccessibilitySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (error: ActivityNotFoundException) {
+            sttViewModel.onExternalActionFailed(
+                "Android could not open accessibility Settings.",
+            )
+        } catch (error: SecurityException) {
+            sttViewModel.onExternalActionFailed(
+                "Android blocked access to accessibility Settings.",
             )
         }
     }

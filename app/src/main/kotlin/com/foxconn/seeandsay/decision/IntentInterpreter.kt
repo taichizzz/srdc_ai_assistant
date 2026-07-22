@@ -55,3 +55,58 @@ sealed interface IntentResult {
     /** Reports that two strict attempts could not produce a safe schema-valid interpretation. */
     object NoMatch : IntentResult
 }
+
+/**
+ * Safe reason the LM debugger can show for a rejected interpretation attempt.
+ *
+ * Values contain no raw response, transcript, prompt, URL, token, header, or credential. They are
+ * immutable pure diagnostics with no I/O, logging, coroutine, or failure behavior.
+ */
+sealed interface LmDiagnosticIssue {
+
+    /** @property reason fixed recoverable client category from the provider-neutral LM seam. */
+    data class ClientFailure(val reason: LmClientFailureReason) : LmDiagnosticIssue
+
+    /** The response was malformed, schema-invalid, semantically incomplete, or safety-rejected. */
+    data object InvalidOrUnsafeResponse : LmDiagnosticIssue
+}
+
+/**
+ * Schema-safe LM interpretation diagnostics suitable for DEBUG display.
+ *
+ * @property result final provider-neutral interpretation result.
+ * @property attempts number of LM completion attempts made, from one through the configured bound.
+ * @property lastRejectedIssue latest fixed rejection category, null when no attempt was rejected.
+ *
+ * This value deliberately excludes raw model output and credentials. It performs no work and is
+ * safe across threads and dispatchers.
+ */
+data class LmInterpretationDiagnostic(
+    val result: IntentResult,
+    val attempts: Int,
+    val lastRejectedIssue: LmDiagnosticIssue? = null,
+)
+
+/**
+ * Optional interpreter extension exposing safe attempt diagnostics without changing intent output.
+ *
+ * Implementations must preserve [IntentInterpreter] cancellation and safety rules and must never
+ * expose raw provider output or credential material.
+ */
+interface DiagnosticIntentInterpreter : IntentInterpreter {
+
+    /**
+     * Interprets one utterance and reports only schema-safe result/attempt metadata.
+     *
+     * @param transcript normalized semantic input.
+     * @param screen immutable contextual snapshot projected index-free at the LM seam.
+     * @return safe result and bounded attempt diagnostics.
+     *
+     * Provider work may suspend. Cancellation propagates unchanged; ordinary failures are reported
+     * by fixed [LmDiagnosticIssue] values.
+     */
+    suspend fun interpretWithDiagnostics(
+        transcript: String,
+        screen: ScreenSnapshot,
+    ): LmInterpretationDiagnostic
+}

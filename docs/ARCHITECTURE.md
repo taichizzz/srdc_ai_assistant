@@ -26,6 +26,7 @@ app/
 └── src/main/kotlin/com/foxconn/seeandsay/
     ├── pipeline/          # The brain: state machine + task runner
     │   ├── VoicePipeline.kt        # single-utterance loop (states below)
+    │   ├── IntegratedCommandCoordinator.kt # ✓ DEBUG typed M2.3 closed loop
     │   ├── TaskRunner.kt           # multi-step orchestration (M3.2)
     │   └── PipelineState.kt        # sealed class of states
     ├── speech/            # Week 1 — voice I/O (NO accessibility imports allowed)
@@ -43,6 +44,7 @@ app/
     │   ├── AccessibilityBridge.kt  # real impl backed by the service
     │   ├── SeeAndSayService.kt     # AccessibilityService subclass
     │   ├── SnapshotBuilder.kt      # UI tree → ScreenSnapshot
+    │   ├── ScreenSettler.kt        # ✓ event burst → 300 ms quiet / bounded timeout
     │   └── model/ScreenSnapshot.kt # data classes + kotlinx.serialization
     ├── normalization/     # shared, used by decision/ and pipeline/
     │   └── TextNormalizer.kt       # ✓ the ONE normalize(); never compare raw strings
@@ -178,7 +180,7 @@ Idle → Listening → Transcribing → Reading → Deciding → Acting → Veri
 
 Rules:
 
-- Implemented as a `sealed class PipelineState`, driven by one coroutine in `VoicePipeline`. **No component may bypass the state machine to call another component directly.**
+- Production voice is implemented as a `sealed class PipelineState`, driven by one coroutine in `VoicePipeline`. **No production component may bypass the state machine to call another component directly.** The DEBUG-only `IntegratedCommandCoordinator` mirrors Reading → Deciding → Acting → Verifying for typed M2.3 acceptance while voice integration remains M3.1.
 - Voice initiation remains push-to-talk: the user explicitly presses **Start**. During that one user-started session, the first non-blank final `SttResult` is the provider's end-of-utterance signal and must route through the same microphone-stop/cloud-drain path as manual **Stop**. Stop remains an idempotent override when the provider is slow or the user wants to end early. Final-result endpointing must not add a wake word, always-listening mode, barge-in, or automatic re-listen after TTS.
 - While `LM_ENABLED` is false, the M1.3 reply stage uses normalized local intents for greetings, identity, help, thanks, repeat, conversational cancel, and simple open/play target extraction. Its context is bounded and process-local only: last transcript, reply, requested target, and last verified successful action. `再說一次` repeats the remembered reply; `取消` clears only the remembered target and does not pretend to cancel an unrelated coroutine. Before M2.2/M2.3, target requests may be acknowledged but must never claim that a UI action happened; `lastSuccessfulAction` may be updated only after read-back verification.
 - DEBUG builds expose a main-pipeline STT selector for the **next** user-started session with exactly V1 `latest_short` (default) and V2 `chirp_3`. The ViewModel snapshots one provider-neutral `SttClient` before capture, blocks changes during any active audio/reply work, and keeps this selector independent from the V1/Chirp 2/Chirp 3 comparison harness. Release exposes no selector and stays on V1 `latest_short`; Chirp 3 still requires its V2 project, location, IAM credential, and current model/region availability.
@@ -228,7 +230,7 @@ Rules:
 | M1.3 Voice loop          | `pipeline/VoicePipeline` (speech states only)                  | 「你好」→ reply spoken, no manual steps |
 | M2.1 Read screen         | `bridge/SeeAndSayService`, `SnapshotBuilder`, `ui/DebugScreen` | Live element list of any foreground app |
 | M2.2 Operate             | `bridge/AccessibilityBridge`, `decision/TextMatcher`           | Typed「設定」opens Settings             |
-| M2.3 Closed loop         | `pipeline` Verifying state                                     | Every click auto-confirmed by re-read   |
+| M2.3 Closed loop         | `bridge/ScreenSettler`, `pipeline/IntegratedCommandCoordinator` | Typed actions event-wait and auto-confirm by re-read |
 | M3.1 Single-step voice   | `pipeline` full machine                                        | Voice「打開設定」end-to-end             |
 | M3.2 Multi-step          | `pipeline/TaskRunner`                                          | 「打開設定→顯示→字型調大」chain works   |
 | M3.3 Target B (optional) | kitt-map repo (`contentDescription` annotation)                | FoxMap elements appear in snapshots     |

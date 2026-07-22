@@ -84,8 +84,8 @@
     <string name="retry">Retry</string>
     <string name="open_settings">Open settings</string>
     <string name="microphone_rationale">Microphone access is needed only when you press Start. Retry when you are ready to grant it.</string>
-    <string name="matching_inspector_title">DEBUG matching inspector</string>
-    <string name="matching_inspector_explanation">Reads the injected provider-neutral snapshot and previews a tiered Decision only. It does not perform the action.</string>
+    <string name="matching_inspector_title">DEBUG matching inspector (SCRIPTED FAKE)</string>
+    <string name="matching_inspector_explanation">Uses FakeUiBridge snapshots only to regression-test tiered matching. It does not read the live screen or perform an action; use DEBUG integrated command below for the real bridge.</string>
     <string name="matching_inspector_refresh">Refresh snapshot</string>
     <string name="matching_inspector_loading">Reading snapshot…</string>
     <string name="matching_inspector_no_snapshot">No screen snapshot loaded</string>
@@ -96,7 +96,7 @@
     <string name="matching_inspector_decision">Decision: %1$s</string>
     <string name="matching_inspector_confidence">Tier: %1$s · score: %2$.3f</string>
     <string name="matching_inspector_no_tier">None</string>
-    <string name="verification_inspector_title">DEBUG verification comparison</string>
+    <string name="verification_inspector_title">DEBUG verification comparison (SCRIPTED FAKE)</string>
     <string name="verification_inspector_explanation">Select the current scripted snapshot as before or after, use Refresh snapshot to advance the fake, then preview Click, SetText, or Back. No action or waiting is performed.</string>
     <string name="verification_inspector_selection">Before: %1$s · After: %2$s</string>
     <string name="verification_inspector_use_before">Use current as before</string>
@@ -108,4 +108,18 @@
     <string name="verification_inspector_back">Back</string>
     <string name="verification_inspector_decision">Decision: %1$s</string>
     <string name="verification_inspector_result">VerificationResult: %1$s</string>
+    <string name="integrated_command_title">DEBUG integrated command</string>
+    <string name="integrated_command_explanation">Put the target screen underneath IVI AI 助理, then Run. The app backgrounds itself, reads the live screen, resolves through LM-first/fallback, acts, waits for accessibility events, reads again, and verifies.</string>
+    <string name="integrated_command_accessibility_settings">Open accessibility settings</string>
+    <string name="integrated_command_input">Live command (for example: 開設定)</string>
+    <string name="integrated_command_run">Run verified command</string>
+    <string name="integrated_command_inspect_lm">Test LM only (no action)</string>
+    <string name="integrated_command_running">Running…</string>
+    <string name="integrated_command_failure">Flow failure: %1$s</string>
+    <string name="integrated_command_decision">Decision: %1$s</string>
+    <string name="integrated_command_path">Resolved by: %1$s</string>
+    <string name="integrated_command_action">Action: %1$s</string>
+    <string name="integrated_command_settle">Event wait: %1$s</string>
+    <string name="integrated_command_verification">Verification: %1$s</string>
+    <string name="lm_debug_title">Live LM debugger</string>
 </resources>
