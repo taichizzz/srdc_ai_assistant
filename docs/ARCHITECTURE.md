@@ -39,11 +39,11 @@ app/
     │   ├── TtsClient.kt            # planned — interface (M1.2)
     │   └── CloudTtsClient.kt       # planned — Google Cloud TTS (M1.2)
     ├── bridge/            # Week 2 — the eye & hand (NO speech imports allowed)
-    │   ├── UiBridge.kt             # interface: readScreen / click / setText / back
-    │   ├── AccessibilityBridge.kt  # real impl backed by the service
-    │   ├── SeeAndSayService.kt     # AccessibilityService subclass
-    │   ├── SnapshotBuilder.kt      # UI tree → ScreenSnapshot
-    │   └── model/ScreenSnapshot.kt # data classes + kotlinx.serialization
+    │   ├── UiBridge.kt             # ✓ interface: readScreen / click / setText / back
+    │   ├── AccessibilityBridge.kt  # ✓ real impl backed by the service (M2.1 read + M2.2 actions)
+    │   ├── SeeAndSayService.kt     # ✓ AccessibilityService subclass
+    │   ├── SnapshotBuilder.kt      # ✓ UI tree → ScreenSnapshot
+    │   └── model/ScreenSnapshot.kt # ✓ pure data classes (kotlinx.serialization is added only with the Week 3 LM contract)
     ├── decision/          # Week 3 — intent → action
     │   ├── DecisionEngine.kt       # interface
     │   ├── TextMatcher.kt          # tier 1, always on
@@ -56,7 +56,7 @@ app/
         ├── SttViewModel.kt         # ✓ StateFlow single source of truth (+ Factory)
         ├── SttUiState.kt           # ✓ SttStatus / MicrophonePermissionStatus / state
         ├── SttDebugScreen.kt       # ✓ M1.1 debug UI (status, transcript, typed input)
-        └── DebugScreen.kt          # planned — Week 2 live element list (M2.1)
+        └── DebugScreen.kt          # ✓ Week 2 bridge debug: live element list (M2.1) + typed command execution (M2.2); hosted by its own BridgeDebugActivity launcher so MainActivity stays voice-only
 ```
 
 **Dependency direction:** `ui → pipeline → {speech, bridge, decision}`. `speech`, `bridge`, and `decision` never import each other. Only `pipeline` composes them. This is what makes rule 5 in Section 2 enforceable.

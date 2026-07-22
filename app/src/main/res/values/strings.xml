@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">IVI AI 助理</string>
+    <string name="bridge_debug_title">Bridge 讀畫面測試</string>
+    <string name="accessibility_service_label">IVI AI 助理（無障礙）</string>
+    <string name="accessibility_service_description">啟用後，IVI AI 助理可讀取當前畫面上的元素，作為語音操控的「眼睛與手」。僅用於本專案的畫面讀取與操作測試。</string>
     <string name="m1_1_debug_title">M1.1 speech-to-text debug</string>
     <string name="permission_status">Microphone permission: %1$s</string>
     <string name="permission_not_requested">Not requested</string>
