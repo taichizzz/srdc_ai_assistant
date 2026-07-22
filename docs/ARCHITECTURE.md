@@ -60,7 +60,7 @@ app/
         ├── SttViewModel.kt         # ✓ StateFlow single source of truth (+ Factory)
         ├── SttUiState.kt           # ✓ SttStatus / MicrophonePermissionStatus / state
         ├── SttDebugScreen.kt       # ✓ M1.1 debug UI (status, transcript, typed input)
-        └── DebugScreen.kt          # planned — Week 2 live element list (M2.1)
+        └── DebugScreen.kt          # ✓ Week 2 bridge debug: live element list (M2.1) + typed command execution (M2.2); hosted by its own BridgeDebugActivity launcher so MainActivity stays voice-only
 ```
 
 **Dependency direction:** `ui → pipeline → {speech, bridge, decision}`. `speech`, `bridge`, and `decision` never import each other. Only `pipeline` composes them. This is what makes rule 5 in Section 2 enforceable.
